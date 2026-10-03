@@ -12,3 +12,8 @@
 
 /* Owner: Sean — compact film assistant */
 .film-agent>summary{font-weight:600;cursor:pointer}.film-agent select{max-width:100%;min-width:0}.agent-transcript{max-height:440px;overflow:auto}.agent-transcript article{padding:12px 0;border-bottom:1px solid var(--line)}.agent-user{color:var(--accent);white-space:pre-wrap}.agent-response{white-space:pre-wrap;line-height:1.7}.agent-proposal pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto}.film-agent>textarea{width:100%;margin-top:12px}
+/* Owner: Sean — inline continuity reference, same shot editor. */
+.visual-anchor-editor {margin:12px 0}
+.visual-anchor-image {display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin:10px 0}
+.visual-anchor-editor select {width:100%;margin:8px 0}
+.visual-anchor-editor small {display:block;overflow-wrap:anywhere;margin-bottom:8px}

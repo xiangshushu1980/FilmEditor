@@ -72,7 +72,13 @@ export function invalidate(p,entityIds=null) {
   for(const s of p.shots) if(!entityIds||s.entityIds.some(e=>entityIds.includes(e))) {s.stale=true;s.selectedCandidateId=null;}
 }
 export function shotInput(p,s) {
-  return {shot:s,plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,...(p.spatialPlan?{spatial:{scenePlan:p.spatialPlan.scenePlan,sourceHash:p.spatialPlan.sourceHash,blocking:p.spatialPlan.shots.find(v=>v.id===s.id)}}:{}),snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
+  return {shot:s,plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,...(p.spatialPlan?{spatial:{scenePlan:p.spatialPlan.scenePlan,sourceHash:p.spatialPlan.sourceHash,blocking:p.spatialPlan.shots.find(v=>v.id===s.id)}}:{}),...visualAnchorInput(p,s),snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
+}
+export function visualAnchorInput(p,s){
+  const anchor=p.visualAnchors?.[s.id];if(!anchor)return {};
+  const index=p.shots.findIndex(v=>v.id===s.id),source=p.shots[index-1];
+  // Only the preceding shot participates, making the dependency chain acyclic even for stale records.
+  return {visualAnchor:{...anchor,currentSourceHash:source?.id===anchor.sourceShotId?shotHash(p,source):null,selectedSource:source?.selectedCandidateId&&source.selectedCandidateId!==anchor.sourceCandidateId?source.selectedCandidateId:anchor.sourceCandidateId}};
 }
 export function shotHash(p,s) {
   const {selectedCandidateId,stale,...spec}=s;
@@ -85,7 +91,7 @@ export const scriptSourceHash=p=>fingerprint({plot:p.plot,entities:p.entities,ta
 export const scriptContentHash=p=>fingerprint({source:scriptSourceHash(p),script:p.script,dialogue:p.dialogue});
 export const shotsSourceHash=p=>scriptContentHash(p);
 export const shotsContentHash=p=>fingerprint({source:shotsSourceHash(p),shots:p.shots.map(shotPlan)});
-export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s),...(p.spatialPlan?{spatial:p.spatialPlan}:{})});
+export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s),...(p.spatialPlan?{spatial:p.spatialPlan}:{}),...visualAnchorInput(p,s)});
 export function ensurePipeline(p) {
   if(p.pipeline)return;
   const approved=p.approval?.hash===approvalHash(p);
@@ -104,6 +110,6 @@ export function pipelineStatus(p) {
 export function generationStatus(p) {
   ensurePipeline(p);
   const spatialStale=!!p.spatialPlan&&p.spatialPlan.sourceHash!==shotsContentHash(p);
-  return {spatialStale,prompts:p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'missing':spatialStale||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':'ready'}))};
+  return {spatialStale,anchors:p.shots.filter(s=>p.visualAnchors?.[s.id]).map(s=>{const a=visualAnchorInput(p,s).visualAnchor;return {shotId:s.id,status:a.currentSourceHash===a.sourceInputHash&&a.selectedSource===a.sourceCandidateId?'ready':'stale'};}),prompts:p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'missing':spatialStale||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':'ready'}))};
 }
-export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,...(p.spatialPlan?{spatialPlan:structuredClone(p.spatialPlan)}:{}),pipeline:structuredClone(p.pipeline)};}
+export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,...(p.visualAnchors?{visualAnchors:structuredClone(p.visualAnchors)}:{}),...(p.spatialPlan?{spatialPlan:structuredClone(p.spatialPlan)}:{}),pipeline:structuredClone(p.pipeline)};}

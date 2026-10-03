@@ -1,7 +1,7 @@
 // Owner: Sean — direct configurable OpenAI-compatible client, no agents/director tools.
 import { z } from 'zod';
 import { fail, approvalHash, id, now, ensurePipeline, pipelineStatus, scriptSourceHash, scriptContentHash, shotsSourceHash, shotsContentHash, shotPlan, promptSourceHash } from './store.mjs';
-import { inventory, bindings, request } from './reference.mjs';
+import { inventory, bindings, request, imageBindingContext } from './reference.mjs';
 import { spatialSchema, checkSpatialShots, currentSpatialPlan, spatialShot, exportedFacts, spatialInstructions } from './spatial.mjs';
 const uuid=z.string().uuid();
 export const dialogueSchema=z.object({speaker:uuid,text:z.string().min(1).max(4000),language:z.string().min(1).max(40)}).strict();
@@ -31,7 +31,11 @@ export function validateShot(store,p,shot) {
   if(matches.map(m=>m[1]).join(',')!==sections.join(','))fail('提示词必须按 Ref2VA 六段式填写');
   const fields=Object.fromEntries(matches.map((m,i)=>[m[1],shot.prompt.slice(m.index+m[0].length,matches[i+1]?.index).trim()]));
   if(Object.values(fields).some(v=>!v))fail('提示词六段不能为空');
-  if(!/^\[reference generation(?: \+ audio reuse)?\]/.test(fields.summary))fail('summary 必须包含 reference generation 任务前缀');
+  const tasks=fields.summary.match(/^\[([^\]]+)\]/)?.[1].split(' + ')||[];
+  if(!tasks.includes('reference generation')||tasks.some(t=>!['reference generation','keyframe completion','audio reuse'].includes(t))||new Set(tasks).size!==tasks.length)fail('summary 必须包含正确的 reference generation 任务前缀');
+  const anchor=b.images.find(a=>a.role==='continuity_frame');
+  if(anchor){const n=b.images.length;if(!tasks.includes('keyframe completion')||!new RegExp(`<Picture ${n}>[^\\n]*(?:first frame|opening frame|initial frame|0\\.00)`, 'i').test(fields.subject_definitions)||!fields.detailed_description.includes(`<Picture ${n}>`))fail(`衔接参考帧须定义 Picture ${n} 为开场帧，并在 summary 声明 keyframe completion、正文说明开场衔接`);}
+  else if(tasks.includes('keyframe completion'))fail('当前没有衔接参考帧，不能声明 keyframe completion');
   if(!fields.detailed_description.includes('[Shot 1]'))fail('提示词缺少 [Shot 1]');
   if(/^\[Shot 1\]/.test(fields.detailed_description)||/\[Shot 1\]\s+At\s+\d/.test(fields.detailed_description))fail('风格说明须在 Shot 1 前，Shot 1 不带时间戳');
   const words=fields.detailed_description.split(/\s+/).length;
@@ -57,7 +61,7 @@ export function validateShot(store,p,shot) {
   if(/<d>|\(S\d+\)/.test(fields.retention_analysis)||/<d>/.test(fields.overall_soundscape+fields.non_diegetic_music))fail('对白只写在 detailed_description，retention 不写 speaker ID');
   if(b.audio) {
     if(!shot.verifiedAudioTranscript.trim()||expected.join('')!==shot.verifiedAudioTranscript.trim())fail('音频锁定须人工核对原音频台词，并逐字匹配对白');
-    if(!/\[reference generation \+ audio reuse\]/.test(fields.summary)||!/<Audio 1>/.test(fields.subject_definitions)||!/<Audio 1>:\s*fully_copy/.test(fields.retention_analysis))fail('NativeAudioLock 必须明确声明 audio reuse / fully_copy');
+    if(!tasks.includes('audio reuse')||!/<Audio 1>/.test(fields.subject_definitions)||!/<Audio 1>:\s*fully_copy/.test(fields.retention_analysis))fail('NativeAudioLock 必须明确声明 audio reuse / fully_copy');
     if(Math.abs(b.audio.durationSec-shot.durationSec)>0.2)fail('锁定音频时，镜头时长须贴合源音频（±0.2 秒）');
   }
   let prior=0;
@@ -75,9 +79,9 @@ export function validatePlan(store,p) {
   if(issues.length)fail(issues.join('\n'));
 }
 export function approved(p,shotId=null) {return p.approval?.hash===approvalHash(p)&&(!p.approval.scope||p.approval.scope==='project'||p.approval.shotId===shotId);}
-export function validateShotlist(store,p) {
+export function validateShotlist(store,p,shotId=null) {
   if(!p.shots.length||p.shots.length>40||new Set(p.shots.map(s=>s.id)).size!==p.shots.length)fail('请填写 1–40 个镜头，ID 不可重复');
-  for(const s of p.shots) {
+  for(const s of p.shots.filter(s=>!shotId||s.id===shotId)) {
     const {stale,selectedCandidateId,...content}=s;shotSchema.parse(content);
     if(!s.action.trim()||!s.framing.trim()||!s.camera.trim())fail(`镜头「${s.title}」须填写动作、构图和运镜`);
     if(new Set(s.entityIds).size!==s.entityIds.length||new Set(s.imageAssetIds).size!==s.imageAssetIds.length)fail(`镜头「${s.title}」引用重复`);
@@ -107,7 +111,8 @@ export function prepareCurrentInputs(store,p,stage,shotId) {
   if(stage==='shots')return;
   const target=['prompt','revision','video'].includes(stage)?p.shots.find(s=>s.id===shotId):null;
   if(['prompt','revision','video'].includes(stage)&&!target)fail('镜头不存在',404);
-  validateShotlist(store,target?{...p,shots:[target]}:p);
+  // Keep the full ordered project for predecessor-frame checks; validate only the requested plan.
+  validateShotlist(store,p,target?.id);
   p.pipeline.shots={inputHash:shotsSourceHash(p),confirmedHash:shotsContentHash(p),mode:'generation-input',scope:target?'shot':'project',shotId:target?.id,at:now()};
   if(stage==='video') {
     if(p.spatialPlan&&!currentSpatialPlan(p))fail('共用空间和站位已过期，请先修订拍摄本中的全片空间与提示词',409);
@@ -151,13 +156,13 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
     Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue});
     instructions='Create ONLY the editable shotlist from the confirmed script and dialogue, without rewriting either. Schema {shots:[{title:string,durationSec:number(4..15),entityIds:UUID[],imageAssetIds:UUID[],action:string,framing:string,camera:string,continuity:string,dialogue:[{speaker:entityUUID,text:string,language:string}]}]}. Split into independent clips, one dominant action each, with continuity and ordered image references belonging to selected entities. Use exact approved dialogue in order, without additions, omissions or paraphrases. dialogue.language uses natural names Chinese/English/Cantonese, not locale codes. Do not produce prompt, id, seed or audio-lock fields.';schema=shotlistSchema;
   }else if(stage==='spatial') {
-    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,currentFilmSpaceInstructions:p.spatialPlan?.scenePlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:bindings(store,p,s).images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId}))}))});
+    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,currentFilmSpaceInstructions:p.spatialPlan?.scenePlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:imageBindingContext(bindings(store,p,s).images)}))});
     if(spatialRevision)Object.assign(context,{reviewedProposal:spatialRevision.draft,revisionRequest:spatialNotes||'',validationIssues:spatialRevision.draft.shots.flatMap(item=>{try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt});return [];}catch(e){return [{shotId:item.id,message:e.message}];}})});
     instructions=referenceInstructions+'\n'+spatialInstructions+'\nReturn ONLY {scenePlan:string,questions:string[],shots:[{id:existingUUID,framing:string,continuity:string,startState:string,endState:string,transitionFromPrevious:string,prompt:string,changes:string[]}]}. Cover every existing shot exactly once in the existing order. Write scenePlan, physical start/end states, transition explanations, changes and questions in Chinese for human review, and complete video prompts in English with original dialogue. First establish one shared scene plan for each location, separate authoritative facts from proposed film blocking. currentFilmSpaceInstructions contains user-editable film blocking requirements; honor them where consistent with entity facts and approved actions, and list material conflicts as questions. Do not treat previous prompts or previousSpatialPlan as authoritative scene evidence: repair their invented furniture or spatial contradictions. startState/endState record physical states, not camera composition; explain all non-contiguous states in transitionFromPrevious. Return questions:[] only when there is enough evidence to draft consistent blocking without inventing material scene facts. For each shot with nativeAudioAssetId, preserve the verifiedAudioTranscript and declare audio reuse, <Audio 1> and fully_copy; otherwise no Audio labels. Never return a modified script, dialogue, action, camera, cast, references or duration.';schema=spatialSchema;
     if(spatialRevision)instructions+='\nRevise the supplied reviewedProposal using revisionRequest and validationIssues. Preserve human edits where compatible with authoritative entities and approved shots. Resolve questions only when the user supplied sufficient answers; retain unresolved questions. Never silently change approved actions or duration to resolve timing. Correct the six-section format including moving the style opening BEFORE [Shot 1]. Return a new complete proposal for human review, not automatic adoption.';
   }else {
     const shot=p.shots.find(s=>s.id===shotId);
-    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,confirmedShot:shotPlan(shot),sharedSpatialPlan:currentSpatialPlan(p),currentBlocking:spatialShot(p,shot),shotOrder:p.shots.map(s=>({...shotPlan(s),prompt:s.prompt,blocking:spatialShot(p,s)})),imageBindings:bindings(store,p,shot).images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId}))});
+    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,confirmedShot:shotPlan(shot),sharedSpatialPlan:currentSpatialPlan(p),currentBlocking:spatialShot(p,shot),shotOrder:p.shots.map(s=>({...shotPlan(s),prompt:s.prompt,blocking:spatialShot(p,s)})),imageBindings:imageBindingContext(bindings(store,p,shot).images)});
     instructions=referenceInstructions+'\nThis request returns ONLY {prompt:string} for confirmedShot. Do not return or rewrite script, dialogue, shot fields, IDs or reference order. Preserve every approved dialogue line exactly once in the prompt using its language label. Use the confirmed nativeAudioAssetId and verifiedAudioTranscript only if present: declare audio reuse, <Audio 1> and fully_copy. Otherwise no Audio labels. Output a complete six-section Ref2VA prompt for this one clip.';schema=promptSchema;
   }
   if(stage==='revision') {
@@ -167,6 +172,7 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
     instructions+= '\nRevise currentPrompt based on the user observed problem and desired correction. Return ONLY {prompt:string,changes:string[]}; changes are concise Chinese explanations. Preserve approved dialogue, identities, image order, duration and story beats. Resolve orientation explicitly using body facing, gaze, screen position and spatial anchors, but never invent an unspecified desired direction. Do not claim to have viewed video: only the user description and candidate prompt are supplied. If feedback requires changing approved shot actions, explain that conflict in changes and preserve the approved action.';
     schema=z.object({prompt:z.string().min(1).max(30000),changes:z.array(z.string().max(2000)).max(20)}).strict();
   }
+  if(p.visualAnchors&&['spatial','prompt','revision'].includes(stage))instructions+='\nCONTINUITY FRAMES: Each imageBindings entry with role continuity_frame is an actual frozen frame from the preceding clip, NOT an entity image. Its Picture number comes after all entity references. Define that <Picture N> on its own line as the first frame / edited opening frame of [Shot 1], add keyframe completion to the summary task prefix (retain reference generation and audio reuse only when applicable), add its retention_analysis entry, and explicitly describe starting from <Picture N> in detailed_description. Preserve the room, table geometry, camera side and relevant actor positions of that frame; apply the approved initial state and actions. Reference-video errors are not story truth: explain precisely any approved state corrections to the edited opening frame rather than copying duplicate props. Entity reference identity and costume roles remain distinct. Do not invent a Subject for the frame itself or import additional people from it. Do not use the generic scene image as a competing camera/composition anchor. This text client only has metadata, not pixels; use supplied observations/notes without claiming to have seen the frame.';
   if(stage!=='script'&&stage!=='spatial')instructions+='\n'+spatialInstructions;
   if(directorNotes) {context.directorNotes=directorNotes;instructions+='\nUse directorNotes as additional user direction. Preserve authoritative story/actions/dialogue/cast/references/duration for prompt and spatial stages. If direction conflicts, explain in spatial questions; do not silently change facts.';}
   const system=base+instructions;

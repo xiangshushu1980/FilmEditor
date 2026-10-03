@@ -1,5 +1,6 @@
 // Owner: Sean — public Reference Export v1 only; no internal files or DB imports.
 import { id, now, fail, fingerprint, canonical, hash, invalidate } from './store.mjs';
+import {anchorAsset} from './visual-anchors.mjs';
 export async function request(url, options={}) {
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(60000),...options});
   if(!response.ok)fail(`上游请求失败 (${response.status}): ${(await response.text()).slice(0,1500)}`,502);
@@ -7,7 +8,7 @@ export async function request(url, options={}) {
 }
 export async function entityList(config) {return (await request(`${config.referenceUrl}/api/reference/v1/entities`)).json();}
 export async function importEntities(store,config,projectId,revision,entityIds,{latest=false,assetIds}={}) {
-  const selection={entityIds,includeRelations:'direct',assetRoles:['main_appearance','three_view','voice','sound_effect'],includeUnconfirmed:false};
+  const selection={entityIds,includeRelations:'direct',assetRoles:['main_appearance','three_view','voice','sound_effect','scene_overview','scene_angle','scene_detail'],includeUnconfirmed:false};
   if(assetIds)selection.assetIds=assetIds;
   const manifest=await (await request(`${config.referenceUrl}/api/reference/v1/manifests`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(selection)})).json();
   if(manifest.format!=='reference-manifest'||manifest.schemaVersion!==1)fail('Reference manifest 版本不支持',502);
@@ -35,7 +36,7 @@ export async function importEntities(store,config,projectId,revision,entityIds,{
           shot.imageAssetIds=shot.imageAssetIds.map(assetId=>{
             const prior=previous?.manifest.entities.flatMap(e=>e.assets).find(a=>a.assetId===assetId);
             if(!prior||prior.entityId!==e.entityId)return assetId;
-            return e.assets.find(a=>local[a.assetId]&&a.role===prior.role)?.assetId||assetId;
+            return e.assets.find(a=>local[a.assetId]&&(a.role===prior.role||['main_appearance','scene_overview'].includes(a.role)&&['main_appearance','scene_overview'].includes(prior.role)))?.assetId||assetId;
           });
           const priorAudio=previous?.assets[shot.nativeAudioAssetId];
           if(priorAudio?.entityId===e.entityId) {
@@ -70,7 +71,10 @@ export function bindings(store,p,shot) {
   const images=shot.imageAssetIds.map(assetId=>{
     const a=assets.find(a=>a.assetId===assetId&&a.mediaType==='image');if(!a)fail('镜头引用图不属于当前快照中的已选实体');return a;
   });
+  const anchor=anchorAsset(store,p,shot);if(anchor)images.push(anchor);
+  if(images.length>12)fail('含衔接参考帧最多使用12张图片');
   const audio=shot.nativeAudioAssetId?assets.find(a=>a.assetId===shot.nativeAudioAssetId&&a.mediaType==='audio'):null;
   if(shot.nativeAudioAssetId&&!audio)fail('锁定声音不存在于当前实体快照');
   return {entities,images,audio};
 }
+export const imageBindingContext=images=>images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId,role:a.role,...(a.provenance?{provenance:a.provenance}:{})}));

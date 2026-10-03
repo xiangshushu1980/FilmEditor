@@ -10,6 +10,7 @@ import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
 import { mountFilmAgent } from './film-agent.mjs';
 import { spatialSchema, applySpatialPlan, checkSpatialShots } from './spatial.mjs';
+import {setVisualAnchor,removeVisualAnchor} from './visual-anchors.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const url=z.string().url().refine(s=>{const u=new URL(s);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash;},'需要无认证信息的 HTTP(S) 接口 URL');
 const localUrl=value=>{const parsed=url.parse(value);if(!['127.0.0.1','localhost'].includes(new URL(parsed).hostname))fail('Reference/ComfyUI 必须是本机服务');return parsed.replace(/\/$/,'');};
@@ -78,6 +79,8 @@ app.post('/api/projects/:id/use-latest',async(req,res)=>{
   await importEntities(store,config,projectId,b.revision,Object.keys(p.entities),{latest:true});res.json(store.view(projectId));
 });
 app.get('/api/projects/:id/inventory',(req,res)=>res.json(inventory(store,store.get(getId(req)))));
+app.post('/api/projects/:id/shots/:shotId/visual-anchor',async(req,res)=>{const b=z.object({revision:rev,candidateId:uuid}).strict().parse(req.body),projectId=getId(req);await setVisualAnchor(store,projectId,b.revision,uuid.parse(req.params.shotId),b.candidateId);res.json(store.view(projectId));});
+app.delete('/api/projects/:id/shots/:shotId/visual-anchor',(req,res)=>{const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req);removeVisualAnchor(store,projectId,b.revision,uuid.parse(req.params.shotId));res.json(store.view(projectId));});
 app.post('/api/projects/:id/plan',(_req,res)=>res.status(409).json({error:'已改为分阶段生成：请先生成剧本，再使用当前内容生成拍摄本与逐镜提示词。'}));
 app.get('/api/projects/:id/planning-versions/:versionId',(req,res)=>{
   const version=store.planningVersions(getId(req)).find(v=>v.id===uuid.parse(req.params.versionId));if(!version)fail('版本不存在',404);res.json(version);
@@ -264,7 +267,8 @@ app.get('/api/projects/:id/export',(req,res)=>{const projectId=getId(req);res.at
 app.get('/api/projects/:id/media/:hash',(req,res)=>{
   const projectId=getId(req),h=req.params.hash,view=store.view(projectId);
   const asset=view.snapshots.flatMap(s=>Object.values(s.assets)).find(a=>a.hash===h);
-  const media=asset||view.candidates.find(c=>c.media?.hash===h)?.media||view.cuts.find(c=>c.media?.hash===h)?.media;
+  const anchor=Object.values(view.visualAnchors||{}).find(a=>a.localHash===h)||view.candidates.flatMap(c=>c.input.images||[]).find(a=>a.role==='continuity_frame'&&a.localHash===h)||store.planningVersions(projectId).flatMap(v=>Object.values(v.content.visualAnchors||{})).find(a=>a.localHash===h);
+  const media=asset||anchor||view.candidates.find(c=>c.media?.hash===h)?.media||view.cuts.find(c=>c.media?.hash===h)?.media;
   if(!media)fail('素材不属于此项目',404);
   const content=store.read(h);res.type(media.mime);res.set({'Accept-Ranges':'bytes','ETag':`"${h}"`,'Cache-Control':'private, max-age=31536000, immutable'});
   if(req.headers.range) {
