@@ -8,6 +8,7 @@ import { entityList, importEntities, changes, inventory } from './reference.mjs'
 import { generateStage, confirmStage, requireStage, shotSchema, validatePlan, validateShot, approved, prepareCurrentInputs } from './planning.mjs';
 import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
+import { mountFilmAgent } from './film-agent.mjs';
 import { spatialSchema, applySpatialPlan, checkSpatialShots } from './spatial.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const url=z.string().url().refine(s=>{const u=new URL(s);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash;},'需要无认证信息的 HTTP(S) 接口 URL');
@@ -89,7 +90,11 @@ app.post('/api/projects/:id/stages/:stage/confirm',(req,res)=>{
   store.edit(projectId,b.revision,p=>confirmStage(store,p,stage,b.reviewer),'pipeline-confirm-'+stage);res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
-  const stage=z.enum(['script','shots','prompt','revision','spatial']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional(),useCurrent:z.boolean().optional(),spatialNotes:z.string().max(8000).optional(),spatialRevision:z.object({jobId:uuid,draft:spatialSchema}).strict().optional(),feedback:z.object({candidateId:uuid,observed:z.string().trim().min(1).max(8000),desired:z.string().trim().min(1).max(8000)}).strict().optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
+  const stage=z.enum(['script','shots','prompt','revision','spatial']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional(),useCurrent:z.boolean().optional(),directorNotes:z.string().max(12000).optional(),spatialNotes:z.string().max(8000).optional(),spatialRevision:z.object({jobId:uuid,draft:spatialSchema}).strict().optional(),feedback:z.object({candidateId:uuid,observed:z.string().trim().min(1).max(8000),desired:z.string().trim().min(1).max(8000)}).strict().optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
+  res.status(202).json(startPlanning(projectId,stage,b));
+});
+function startPlanning(projectId,stage,b) {
+  const p=store.get(projectId);
   if(p.revision!==b.revision)fail('项目已更新',409);
   ensurePipeline(p);if(b.useCurrent)prepareCurrentInputs(store,p,stage,b.shotId);requireStage(p,stage,b.shotId);
   if(!p.plot.trim()||!Object.keys(p.entities).length)fail('请先保存剧情并导入实体');
@@ -103,11 +108,11 @@ app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
     checkSpatialShots(p,b.spatialRevision.draft);
   }
   const key=`${projectId}:planning`;if(activeJobs.has(key))fail('本项目已有阶段生成正在执行',409);
-  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false}};
+  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
   activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
   void (async()=>{
     try {
-      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision);
+      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes);
       job.result=result;job.response=provenance;store.job(job);
       if(!['revision','spatial'].includes(stage))store.edit(projectId,b.revision,current=>{
         if(b.useCurrent&&stage!=='script') {current.pipeline.script=structuredClone(p.pipeline.script);if(stage!=='shots')current.pipeline.shots=structuredClone(p.pipeline.shots);}
@@ -126,8 +131,8 @@ app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
     }catch(e){store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:e.message});}
     finally{activeJobs.delete(key);}
   })();
-  res.status(202).json({jobId:job.id,stage,status:'running'});
-});
+  return {jobId:job.id,stage,status:'running'};
+}
 // Owner: Sean — review edits remain job drafts until explicit atomic adoption.
 function spatialReview(req) {
   const projectId=getId(req),p=store.get(projectId),job=store.jobs(projectId).find(j=>j.id===uuid.parse(req.params.jobId));
@@ -216,6 +221,9 @@ app.post('/api/projects/:id/approve',(req,res)=>{
 });
 app.post('/api/projects/:id/candidates',(req,res)=>{
   const b=z.object({revision:rev,shotId:uuid,parentId:uuid.nullable().optional(),retryExact:z.boolean().optional(),useCurrent:z.boolean().optional()}).strict().parse(req.body),projectId=getId(req);
+  res.status(202).json(startCandidate(projectId,b));
+});
+function startCandidate(projectId,b) {
   if(!config.enableGpu)fail('GPU 预览未启用；宿主授权后配置 FILM_ENABLE_GPU=1',403);
   if(comfy.active)fail('已有生成正在执行或恢复',409);
   let c;
@@ -232,8 +240,8 @@ app.post('/api/projects/:id/candidates',(req,res)=>{
     c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:b.retryExact?parent.input:input};store.candidate(c);
     store.event(projectId,'video-generation-input',{shotId:b.shotId,inputRevision:b.revision,resultRevision:b.revision+1,mode:b.useCurrent?'direct-generation':'legacy-approved',shotHash:input.shotHash});
   },'pipeline-video-generation-input');
-  comfy.start(c);res.status(202).json(c);
-});
+  comfy.start(c);return c;
+}
 app.post('/api/projects/:id/select',(req,res)=>{
   const b=z.object({revision:rev,candidateId:uuid}).strict().parse(req.body),projectId=getId(req);
   store.edit(projectId,b.revision,p=>{const c=store.candidates(projectId).find(c=>c.id===b.candidateId),s=p.shots.find(s=>s.id===c?.shotId);if(!s||c.status!=='succeeded')fail('候选不可用');if(c.input.shotHash!==shotHash(p,s))fail('候选来源已过期，请重新生成',409);s.selectedCandidateId=c.id;s.stale=false;p.cutStale=true;store.event(projectId,'clip-selected',{candidateId:c.id,shotId:s.id});});res.json(store.view(projectId));
@@ -266,6 +274,7 @@ app.get('/api/projects/:id/media/:hash',(req,res)=>{
     res.status(206).set('Content-Range',`bytes ${start}-${end}/${content.length}`).send(content.subarray(start,end+1));
   }else res.send(content);
 });
+mountFilmAgent(app,{store,root,config,startPlanning,startCandidate,getGeneration:()=>comfy.activeInfo(),assemble:async(projectId,revision)=>{if(assembling)fail('已有成片正在合成',409);assembling=true;try{await runJob(projectId,revision,'assemble',()=>assemble(store,projectId,revision));return store.view(projectId);}finally{assembling=false;}}});
 app.use('/api',(_req,res)=>res.status(404).json({error:'接口不存在'}));
 if(process.argv.includes('--dev')) {const {createServer}=await import('vite');const vite=await createServer({root,server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
 else {app.use(express.static(path.join(root,'dist')));app.get('/{*path}',(_req,res)=>res.sendFile(path.join(root,'dist/index.html')));}

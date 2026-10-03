@@ -1,7 +1,31 @@
 {
-  "name": "sean-short-film-editor", "version": "0.1.0", "private": true,
-  "type": "module", "owner": "Sean", "engines": { "node": ">=24.0.0" },
-  "scripts": { "dev": "node --env-file-if-exists=.env server/index.mjs --dev", "build": "vite build", "start": "node --env-file-if-exists=.env server/index.mjs" },
-  "dependencies": { "express": "5.2.1", "react": "19.3.0", "react-dom": "19.3.0", "zod": "4.6.5" },
-  "devDependencies": { "vite": "8.3.2" }
+  "name": "sean-short-film-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "owner": "Sean",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server/index.mjs --dev",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "postinstall": "node scripts/patch-pi-dependency.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.86.0",
+    "brace-expansion": "5.0.12",
+    "express": "5.2.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "sharp": "0.35.5",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "vite": "8.3.2"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.12"
+  }
 }

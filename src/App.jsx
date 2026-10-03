@@ -1,4 +1,5 @@
 // Owner: Sean — one-page review/editor UI, independent of Reference workspace.
+import FilmAgentPanel from './FilmAgentPanel.jsx';
 import React,{useState,useEffect,useRef,useId} from 'react';
 const label={queued:'排队',submitting:'提交中',running:'执行中',recovering:'恢复中',uncertain:'待核查',succeeded:'已完成',failed:'失败',interrupted:'已中断',conflict:'输入已变化',empty:'待生成',draft:'待确认',stale:'前序已变化',confirmed:'已确认'};
 const stageNames={spatial:'空间与全部提示词',script:'剧本与对白',shots:'拍摄本',prompt:'逐镜提示词',assemble:'合成成片',plan:'旧版完整编写'};
@@ -167,6 +168,7 @@ export default function App() {
         {!p?<div className="welcome"><span className="eyebrow">SEAN / FILM EDITOR</span><h1>让故事成为短片。</h1><p>选择实体，写下剧情，审阅每一镜。保留尝试，也保留决定。</p><button className="primary" onClick={()=>setModal('create')}>创建第一部短片</button><div className="flow"><span>实体</span><i>→</i><span>剧本</span><i>→</i><span>镜头</span><i>→</i><span>成片</span></div></div>:<>
           <div className="story-title"><div><span className="eyebrow">STORY / {String(p.shots.length).padStart(2,'0')} SHOTS</span><input className="title-input" aria-label="项目标题" value={draft?.title||''} onChange={e=>setField('title',e.target.value)}/></div><small className="muted">{p.shots.reduce((n,s)=>n+s.durationSec,0).toFixed(1)} 秒 · {p.settings.render.width} × {p.settings.render.height}</small></div>
           <section className="story-card workflow-status" aria-label="当前流程状态"><div className="section-head"><h2>{nextStep.title}</h2></div><p>{nextStep.detail}</p><div className="chips"><span className="chip">拍摄安排 · {p.shots.length} 镜</span><span className="chip">提示词 · {p.shots.length-incompletePrompts.length}/{p.shots.length} 可用</span></div>{nextStep.button&&<button className="primary" disabled={!!busy} onClick={nextStep.run}>{nextStep.button}</button>}</section>
+          <FilmAgentPanel project={p} onBeforeSend={savedInput} onRefresh={()=>{if(!interactionRef.current.dirty)void api(`/projects/${p.id}`).then(value=>{if(projectRef.current===value.id)apply(value);}).catch(e=>setError(e.message));}}/>
           <section id="script-stage" className="story-card"><div className="section-head"><h2>1 · 剧本与对白</h2><Badge>{stageStatus('script')==='running'?'生成中':p.script.trim()?'可编辑':'待编写'}</Badge></div>
             <p className="muted compact">写好故事方向后，直接生成拍摄本。生成时保存当前内容，修改和重新生成都保留历史。</p>
             <div className="row"><button disabled={!!busy||planningBusy||!entities.length||!draft?.plot.trim()} onClick={()=>generateStage('script')}>生成剧本与对白 ↗</button></div>

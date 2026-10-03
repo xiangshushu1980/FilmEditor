@@ -9,3 +9,6 @@
 
 /* Owner: Sean — readable saved shotlist and one actionable workflow status. */
 .workflow-status{border-left:3px solid var(--accent)}.workflow-status>.chips{margin-bottom:12px}.shotlist-overview dl{display:grid;grid-template-columns:110px minmax(0,1fr);gap:10px 16px}.shotlist-overview dt{color:var(--muted)}.shotlist-overview dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65}.shotlist-overview dd p{margin:0}.shotlist-overview dd .chip{display:inline-block;margin:0 6px 6px 0}@media(max-width:760px){.shotlist-overview dl{grid-template-columns:1fr;gap:5px}.shotlist-overview dd{margin-bottom:10px}}
+
+/* Owner: Sean — compact film assistant */
+.film-agent>summary{font-weight:600;cursor:pointer}.film-agent select{max-width:100%;min-width:0}.agent-transcript{max-height:440px;overflow:auto}.agent-transcript article{padding:12px 0;border-bottom:1px solid var(--line)}.agent-user{color:var(--accent);white-space:pre-wrap}.agent-response{white-space:pre-wrap;line-height:1.7}.agent-proposal pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:350px;overflow:auto}.film-agent>textarea{width:100%;margin-top:12px}

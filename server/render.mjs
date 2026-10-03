@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fail, id, now, shotHash, fingerprint, hash } from './store.mjs';
 const exec=promisify(execFile);
-const mediaTool=name=>process.env[`FILM_${name.toUpperCase()}_BIN`]||[path.join(homedir(),'.local/bin',name),`/usr/bin/${name}`,`/usr/local/bin/${name}`].find(existsSync)||name;
+export const mediaTool=name=>process.env[`FILM_${name.toUpperCase()}_BIN`]||[path.join(homedir(),'.local/bin',name),`/usr/bin/${name}`,`/usr/local/bin/${name}`].find(existsSync)||name;
 export async function assemble(store,projectId,revision) {
   const p=store.get(projectId);if(p.revision!==revision)fail('项目已被更新，请刷新',409);
   if(!p.shots.length)fail('没有镜头');
