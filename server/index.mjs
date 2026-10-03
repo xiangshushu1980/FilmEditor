@@ -186,9 +186,17 @@ app.post('/api/projects/:id/select',(req,res)=>{
 });
 let assembling=false;
 app.post('/api/projects/:id/assemble',async(req,res)=>{
-  const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req);
+  const b=z.object({revision:rev,selectLatest:z.boolean().optional()}).strict().parse(req.body),projectId=getId(req);
   if(assembling)fail('已有成片正在合成',409);assembling=true;
-  try{await runJob(projectId,b.revision,'assemble',()=>assemble(store,projectId,b.revision));res.json(store.view(projectId));}finally{assembling=false;}
+  try{
+    if(b.selectLatest) {
+      const current=store.get(projectId);if(current.revision!==b.revision)fail('项目已更新',409);
+      const candidates=store.candidates(projectId);
+      const choices=current.shots.map(s=>{const valid=candidates.filter(c=>c.shotId===s.id&&c.status==='succeeded'&&c.media&&c.input.shotHash===shotHash(current,s));const choice=valid.find(c=>c.id===s.selectedCandidateId)||valid.at(-1);if(!choice)fail(`镜头「${s.title}」没有当前有效的视频，请先生成`,409);return choice;});
+      if(!choices.length)fail('没有镜头');
+      const selected=store.edit(projectId,b.revision,p=>{p.shots.forEach((s,i)=>{s.selectedCandidateId=choices[i].id;s.stale=false;});p.cutStale=true;store.event(projectId,'clips-selected-for-assembly',{candidateIds:choices.map(c=>c.id)});},'assembly-selection');b.revision=selected.revision;
+    }
+    await runJob(projectId,b.revision,'assemble',()=>assemble(store,projectId,b.revision));res.json(store.view(projectId));}finally{assembling=false;}
 });
 app.get('/api/projects/:id/export',(req,res)=>{const projectId=getId(req);res.attachment('sean-film-project.json').json({...store.view(projectId),jobs:store.jobs(projectId),planningVersions:store.planningVersions(projectId)});});
 app.get('/api/projects/:id/media/:hash',(req,res)=>{

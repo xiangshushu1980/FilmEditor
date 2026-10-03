@@ -39,6 +39,10 @@ export default function App() {
   interactionRef.current={dirty,busy};
   const activeGeneration=config?.activeGeneration;
   const generationDisabledReason=busy?`正在${busy}，请等待`:dirty?'请先保存当前修改':!shot?'请先选择镜头':!config?'正在读取生成配置':!config.enableGpu?'宿主尚未启用 GPU 预览':!p?.approval?'请先批准当前剧本与拍摄本':config.activeCandidateId?`${activeGeneration?.shotTitle||'已有镜头'}正在${activeGeneration?.progress?.detail||'生成或恢复'}；结束并释放资源后可创建新候选`:'';
+  const missingClips=p?.shots.filter(s=>!p.candidates.some(c=>c.shotId===s.id&&c.isCurrent&&c.status==='succeeded'&&c.media))||[];
+  const needsSelection=!!p?.shots.some(s=>s.stale||!s.selectedCandidateId);
+  const assemblyRunning=!!p?.jobs?.some(j=>j.kind==='assemble'&&j.status==='running');
+  const assemblyReason=assemblyRunning?'正在合成视频，请等待':busy?`正在${busy}`:dirty?'请先保存修改':!p?.shots.length?'请先添加镜头':missingClips.length?`以下镜头尚无有效视频：${missingClips.map(s=>s.title).join('、')}`:needsSelection?'尚未选片；点击按钮选用每镜最新有效候选并合成，已有选片会保留':'所有镜头已选定，可以合成';
   const planningBusy=!!p?.jobs?.some(j=>['script','shots','prompt','revision'].includes(j.kind)&&j.status==='running');
   const stageStatus=(stage,target)=>p?.jobs?.some(j=>j.kind===stage&&j.status==='running'&&(!target||j.shotId===target))?'running':stage==='prompt'?p?.stages?.prompts.find(v=>v.shotId===target)?.status:p?.stages?.[stage];
   const media=h=>`/api/projects/${p.id}/media/${h}`;
@@ -132,8 +136,8 @@ export default function App() {
               {c?.media&&<video className="shot-thumb" src={media(c.media.hash)} muted preload="metadata"/>}<div className="order-buttons"><button className="quiet" aria-label="镜头前移" disabled={i===0||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i-1);}}>↑</button><button className="quiet" aria-label="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i+1);}}>↓</button></div>
             </article>;
           })}{!p.shots.length&&<div className="empty"><span className="empty-icon">▤</span><h3>拍摄本等待你的故事</h3><p>确认剧本与对白后生成拍摄本；确认拍摄本后逐镜生成提示词。</p></div>}</div>
-          <section className="cut-panel"><div className="section-head"><div><h2>成片</h2><small className="muted">按拍摄本顺序合成选定镜头</small></div><div className="row"><Badge tone={p.cutStale?'warn':'good'}>{p.cutStale?'待合成':'当前成片'}</Badge><button disabled={!!busy||dirty||!p.shots.length||p.shots.some(s=>s.stale||!s.selectedCandidateId)} className="primary" onClick={()=>work('FFmpeg 正在合成',async()=>{clean();apply(await action('assemble'));setMessage('成片已保存');})}>合成选定镜头</button></div></div>
-            <div className="timeline">{p.shots.map((s,i)=><button style={{flexGrow:s.durationSec}} key={s.id} className={s.stale?'stale':''} onClick={()=>chooseShot(s.id)}>{String(i+1).padStart(2,'0')} <small>{s.durationSec}s</small></button>)}</div>
+          <section className="cut-panel"><div className="section-head"><div><h2>成片</h2><small className="muted">按拍摄本顺序合成选定镜头</small></div><div className="row"><Badge tone={p.cutStale?'warn':'good'}>{p.cutStale?'待合成':'当前成片'}</Badge><button disabled={!!busy||assemblyRunning||dirty||!p.shots.length||!!missingClips.length} title={assemblyReason} className="primary" onClick={()=>work('FFmpeg 正在合成',async()=>{clean();apply(await action('assemble',{selectLatest:needsSelection}));setMessage('成片已保存，可以播放或下载');})}>{needsSelection?'选用最新候选并合成':'合成选定镜头'}</button></div></div>
+            <p className="muted" role="status">{assemblyReason}</p><div className="timeline">{p.shots.map((s,i)=><button style={{flexGrow:s.durationSec}} key={s.id} className={s.stale?'stale':''} onClick={()=>chooseShot(s.id)}>{String(i+1).padStart(2,'0')} <small>{s.durationSec}s</small></button>)}</div>
             {p.cuts.length>0&&<div className="cut-history">{[...p.cuts].reverse().map(c=><details key={c.id} open={c.id===p.selectedCutId}><summary>成片 {new Date(c.createdAt).toLocaleString()} · {Number(c.probe.format.duration).toFixed(2)}s {c.id===p.selectedCutId&&p.cutStale?'· 来源已过期':''}</summary><video controls preload="metadata" src={media(c.media.hash)}/><a href={media(c.media.hash)} download={`sean_cut_${c.id}.mp4`}>下载 MP4 ↗</a></details>)}</div>}
           </section>
         </>}
