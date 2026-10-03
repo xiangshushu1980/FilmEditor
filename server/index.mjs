@@ -184,6 +184,21 @@ app.post('/api/projects/:id/shots',(req,res)=>{
     store.event(projectId,'shot-created',{shot:s});
   });res.status(201).json(store.view(projectId));
 });
+// Owner: Sean — remove a shot from the active plan while retaining its evidence/history.
+app.delete('/api/projects/:id/shots/:shotId',(req,res)=>{
+  const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req),shotId=uuid.parse(req.params.shotId);
+  if(activeJobs.has(`${projectId}:planning`)||activeJobs.has(`${projectId}:assemble`))fail('本项目正在编写或合成，请等待结束后删除镜头',409);
+  const active=comfy.activeInfo();
+  if(active?.projectId===projectId&&active.shotId===shotId)fail('此镜头正在生成或恢复，请等待结束后再删除',409);
+  store.edit(projectId,b.revision,p=>{
+    const i=p.shots.findIndex(s=>s.id===shotId);if(i<0)fail('镜头不存在',404);
+    const [removed]=p.shots.splice(i,1);
+    delete p.pipeline.promptInputs[shotId];
+    // The remaining clips stay available; the edited plan and cut require review again.
+    p.approval=null;p.cutStale=true;
+    store.event(projectId,'shot-deleted',{shot:removed,index:i,retainedCandidateIds:store.candidates(projectId).filter(c=>c.shotId===shotId).map(c=>c.id)});
+  },'shot-delete');res.json(store.view(projectId));
+});
 app.put('/api/projects/:id/shots/:shotId',(req,res)=>{
   const b=z.object({revision:rev,shot:shotSchema}).strict().parse(req.body),projectId=getId(req),shotId=uuid.parse(req.params.shotId);
   if(b.shot.id!==shotId)fail('镜头 ID 不匹配');
