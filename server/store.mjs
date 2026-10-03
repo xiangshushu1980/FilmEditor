@@ -72,7 +72,7 @@ export function invalidate(p,entityIds=null) {
   for(const s of p.shots) if(!entityIds||s.entityIds.some(e=>entityIds.includes(e))) {s.stale=true;s.selectedCandidateId=null;}
 }
 export function shotInput(p,s) {
-  return {shot:s,plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
+  return {shot:s,plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,...(p.spatialPlan?{spatial:{scenePlan:p.spatialPlan.scenePlan,sourceHash:p.spatialPlan.sourceHash,blocking:p.spatialPlan.shots.find(v=>v.id===s.id)}}:{}),snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
 }
 export function shotHash(p,s) {
   const {selectedCandidateId,stale,...spec}=s;
@@ -85,7 +85,7 @@ export const scriptSourceHash=p=>fingerprint({plot:p.plot,entities:p.entities,ta
 export const scriptContentHash=p=>fingerprint({source:scriptSourceHash(p),script:p.script,dialogue:p.dialogue});
 export const shotsSourceHash=p=>scriptContentHash(p);
 export const shotsContentHash=p=>fingerprint({source:shotsSourceHash(p),shots:p.shots.map(shotPlan)});
-export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s)});
+export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s),...(p.spatialPlan?{spatial:p.spatialPlan}:{})});
 export function ensurePipeline(p) {
   if(p.pipeline)return;
   const approved=p.approval?.hash===approvalHash(p);
@@ -96,7 +96,8 @@ export function pipelineStatus(p) {
   const status=(has,record,input,content,upstream=true)=>!has?'empty':!upstream||record.inputHash!==input?'stale':record.confirmedHash===content?'confirmed':'draft';
   const script=status(!!p.script.trim(),p.pipeline.script,scriptSourceHash(p),scriptContentHash(p));
   const shots=status(!!p.shots.length,p.pipeline.shots,shotsSourceHash(p),shotsContentHash(p),script==='confirmed');
-  const prompts=p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'empty':shots!=='confirmed'||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':p.approval?.hash===approvalHash(p)?'confirmed':'draft'}));
-  return {script,shots,prompts,ready:shots==='confirmed'&&prompts.length>0&&prompts.every(s=>['draft','confirmed'].includes(s.status))};
+  const spatialCurrent=!p.spatialPlan||p.spatialPlan.sourceHash===shotsContentHash(p);
+  const prompts=p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'empty':!spatialCurrent||shots!=='confirmed'||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':p.approval?.hash===approvalHash(p)?'confirmed':'draft'}));
+  return {script,shots,spatial:!p.spatialPlan?'empty':!spatialCurrent?'stale':shots==='confirmed'?'confirmed':'draft',prompts,ready:spatialCurrent&&shots==='confirmed'&&prompts.length>0&&prompts.every(s=>['draft','confirmed'].includes(s.status))};
 }
-export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,pipeline:structuredClone(p.pipeline)};}
+export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,...(p.spatialPlan?{spatialPlan:structuredClone(p.spatialPlan)}:{}),pipeline:structuredClone(p.pipeline)};}

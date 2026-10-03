@@ -8,6 +8,7 @@ import { entityList, importEntities, changes, inventory } from './reference.mjs'
 import { generateStage, confirmStage, requireStage, shotSchema, validatePlan, validateShot, approved } from './planning.mjs';
 import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
+import { spatialSchema, applySpatialPlan } from './spatial.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const url=z.string().url().refine(s=>{const u=new URL(s);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash;},'需要无认证信息的 HTTP(S) 接口 URL');
 const localUrl=value=>{const parsed=url.parse(value);if(!['127.0.0.1','localhost'].includes(new URL(parsed).hostname))fail('Reference/ComfyUI 必须是本机服务');return parsed.replace(/\/$/,'');};
@@ -87,20 +88,20 @@ app.post('/api/projects/:id/stages/:stage/confirm',(req,res)=>{
   store.edit(projectId,b.revision,p=>confirmStage(store,p,stage,b.reviewer),'pipeline-confirm-'+stage);res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
-  const stage=z.enum(['script','shots','prompt','revision']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional(),feedback:z.object({candidateId:uuid,observed:z.string().trim().min(1).max(8000),desired:z.string().trim().min(1).max(8000)}).strict().optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
+  const stage=z.enum(['script','shots','prompt','revision','spatial']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional(),spatialNotes:z.string().max(8000).optional(),feedback:z.object({candidateId:uuid,observed:z.string().trim().min(1).max(8000),desired:z.string().trim().min(1).max(8000)}).strict().optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
   if(p.revision!==b.revision)fail('项目已更新',409);
   ensurePipeline(p);requireStage(p,stage,b.shotId);
   if(!p.plot.trim()||!Object.keys(p.entities).length)fail('请先保存剧情并导入实体');
   if(!p.settings.llm.model)fail('请先设置 LLM 模型');
   if(stage==='revision') {if(!b.feedback)fail('请填写实际问题和期望效果');const candidate=store.candidates(projectId).find(c=>c.id===b.feedback.candidateId&&c.shotId===b.shotId&&c.status==='succeeded');if(!candidate)fail('反馈视频不存在',404);b.feedback={...b.feedback,candidatePrompt:candidate.input.shot.prompt};}
   const key=`${projectId}:planning`;if(activeJobs.has(key))fail('本项目已有阶段生成正在执行',409);
-  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings,feedback:b.feedback}};
+  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes}};
   activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
   void (async()=>{
     try {
-      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback);
+      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes);
       job.result=result;job.response=provenance;store.job(job);
-      if(stage!=='revision')store.edit(projectId,b.revision,current=>{
+      if(!['revision','spatial'].includes(stage))store.edit(projectId,b.revision,current=>{
         if(stage==='script') {
           Object.assign(current,result);current.pipeline.script={inputHash:scriptSourceHash(current),confirmedHash:null};invalidate(current);
         }else if(stage==='shots') {
@@ -117,6 +118,16 @@ app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
     finally{activeJobs.delete(key);}
   })();
   res.status(202).json({jobId:job.id,stage,status:'running'});
+});
+app.post('/api/projects/:id/jobs/:jobId/apply-spatial',(req,res)=>{
+  const projectId=getId(req),job=store.jobs(projectId).find(j=>j.id===uuid.parse(req.params.jobId));
+  const b=z.object({revision:rev,result:spatialSchema}).strict().parse(req.body);
+  if(!job||job.kind!=='spatial'||job.status!=='succeeded'||job.appliedAt)fail('空间修订稿不可采用',409);
+  if(job.input.revision!==b.revision)fail('项目已改变，请基于当前版本重新修订',409);
+  store.edit(projectId,b.revision,p=>{
+    requireStage(p,'spatial');applySpatialPlan(store,p,b.result,validateShot);
+    store.event(projectId,'spatial-revision-applied',{jobId:job.id,reviewer:'Sean',shotIds:p.shots.map(s=>s.id)});store.job({...job,appliedAt:now(),adoptedResult:b.result});
+  },'pipeline-spatial-revision');res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/jobs/:jobId/apply-prompt',(req,res)=>{
   const projectId=getId(req),job=store.jobs(projectId).find(j=>j.id===uuid.parse(req.params.jobId));
@@ -174,7 +185,7 @@ app.post('/api/projects/:id/candidates',(req,res)=>{
     const parent=b.parentId?candidates.find(c=>c.id===b.parentId):candidates.at(-1);
     if(b.parentId&&!parent)fail('父候选不存在');
     const {stale,selectedCandidateId,...spec}=shot;
-    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,approval:p.approval,model,adapterVersion:'sean-ref2va@2'};
+    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,approval:p.approval,model,...(p.spatialPlan?{spatialPlan:p.spatialPlan}:{}),adapterVersion:'sean-ref2va@2'};
     if(b.retryExact&&(!parent||parent.input.shotHash!==input.shotHash))fail('原输入已失效，请按当前内容新建候选');
     c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:b.retryExact?parent.input:input};store.candidate(c);
   });
