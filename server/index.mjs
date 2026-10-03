@@ -3,9 +3,9 @@ import express from 'express';
 import { z } from 'zod';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Store, id, now, fail, invalidate, approvalHash, shotHash } from './store.mjs';
+import { Store, id, now, fail, invalidate, approvalHash, shotHash, ensurePipeline, pipelineStatus, scriptSourceHash, shotsSourceHash, promptSourceHash, planningContent } from './store.mjs';
 import { entityList, importEntities, changes, inventory } from './reference.mjs';
-import { generatePlan, shotSchema, validatePlan, validateShot, approved } from './planning.mjs';
+import { generateStage, confirmStage, requireStage, shotSchema, validatePlan, validateShot, approved } from './planning.mjs';
 import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -53,7 +53,7 @@ app.get('/api/projects/:id',(req,res)=>res.json(store.view(getId(req))));
 app.patch('/api/projects/:id',(req,res)=>{
   const b=z.object({revision:rev,title:z.string().trim().min(1).max(150),plot:z.string().max(40000),script:z.string().max(40000),dialogue:z.string().max(40000),settings:settingsSchema,shotEdits:z.array(shotSchema).max(40).optional()}).strict().parse(req.body);
   const p=store.edit(getId(req),b.revision,p=>{
-    if(p.plot!==b.plot||p.script!==b.script||p.dialogue!==b.dialogue||JSON.stringify(p.settings.render)!==JSON.stringify(b.settings.render))invalidate(p);
+    if(p.plot!==b.plot||p.script!==b.script||p.dialogue!==b.dialogue||p.settings.targetDurationSec!==b.settings.targetDurationSec||JSON.stringify(p.settings.render)!==JSON.stringify(b.settings.render))invalidate(p);
     Object.assign(p,{title:b.title,plot:b.plot,script:b.script,dialogue:b.dialogue,settings:b.settings});
     for(const edit of b.shotEdits||[]) {
       const i=p.shots.findIndex(s=>s.id===edit.id);if(i<0)fail('镜头不存在',404);
@@ -75,13 +75,55 @@ app.post('/api/projects/:id/use-latest',async(req,res)=>{
   await importEntities(store,config,projectId,b.revision,Object.keys(p.entities),{latest:true});res.json(store.view(projectId));
 });
 app.get('/api/projects/:id/inventory',(req,res)=>res.json(inventory(store,store.get(getId(req)))));
-app.post('/api/projects/:id/plan',async(req,res)=>{
-  const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
+app.post('/api/projects/:id/plan',(_req,res)=>res.status(409).json({error:'已改为分阶段生成：请先生成并确认剧本，再生成拍摄本与逐镜提示词。'}));
+app.get('/api/projects/:id/planning-versions/:versionId',(req,res)=>{
+  const version=store.planningVersions(getId(req)).find(v=>v.id===uuid.parse(req.params.versionId));if(!version)fail('版本不存在',404);res.json(version);
+});
+app.get('/api/projects/:id/jobs/:jobId',(req,res)=>{
+  const job=store.jobs(getId(req)).find(j=>j.id===uuid.parse(req.params.jobId));if(!job)fail('任务不存在',404);res.json(job);
+});
+app.post('/api/projects/:id/stages/:stage/confirm',(req,res)=>{
+  const stage=z.enum(['script','shots']).parse(req.params.stage),b=z.object({revision:rev,reviewer:z.string().trim().min(1).max(100)}).strict().parse(req.body),projectId=getId(req);
+  store.edit(projectId,b.revision,p=>confirmStage(store,p,stage,b.reviewer),'pipeline-confirm-'+stage);res.json(store.view(projectId));
+});
+app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
+  const stage=z.enum(['script','shots','prompt']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
   if(p.revision!==b.revision)fail('项目已更新',409);
-  await runJob(projectId,b.revision,'plan',async()=>{
-    const {result,provenance}=await generatePlan(store,config,p);
-    store.edit(projectId,b.revision,current=>{store.event(projectId,'plan-version',{previous:{script:current.script,dialogue:current.dialogue,shots:current.shots},result,provenance});Object.assign(current,result);current.planWarnings=provenance.warnings;invalidate(current);},'plan-generated');
-  });res.json(store.view(projectId));
+  ensurePipeline(p);requireStage(p,stage,b.shotId);
+  if(!p.plot.trim()||!Object.keys(p.entities).length)fail('请先保存剧情并导入实体');
+  if(!p.settings.llm.model)fail('请先设置 LLM 模型');
+  const key=`${projectId}:planning`;if(activeJobs.has(key))fail('本项目已有阶段生成正在执行',409);
+  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings}};
+  activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
+  void (async()=>{
+    try {
+      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);});
+      job.result=result;job.response=provenance;store.job(job);
+      store.edit(projectId,b.revision,current=>{
+        if(stage==='script') {
+          Object.assign(current,result);current.pipeline.script={inputHash:scriptSourceHash(current),confirmedHash:null};invalidate(current);
+        }else if(stage==='shots') {
+          current.shots=result.shots;current.pipeline.shots={inputHash:shotsSourceHash(current),confirmedHash:null};current.pipeline.promptInputs={};invalidate(current);
+        }else {
+          const shot=current.shots.find(s=>s.id===b.shotId);shot.prompt=result.prompt;shot.stale=true;shot.selectedCandidateId=null;
+          current.pipeline.promptInputs[shot.id]=promptSourceHash(current,shot);current.approval=null;current.cutStale=true;
+        }
+        current.planWarnings=provenance.warnings;
+        store.event(projectId,'stage-generated',{stage,jobId:job.id,shotId:job.shotId,responseId:provenance.responseId,model:provenance.model,warnings:provenance.warnings});
+      },'pipeline-generated-'+stage);
+      store.job({...job,status:'succeeded',finishedAt:now(),output:{revision:store.get(projectId).revision}});
+    }catch(e){store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:e.message});}
+    finally{activeJobs.delete(key);}
+  })();
+  res.status(202).json({jobId:job.id,stage,status:'running'});
+});
+app.post('/api/projects/:id/shots/:shotId/prompt-confirm',(req,res)=>{
+  const projectId=getId(req),shotId=uuid.parse(req.params.shotId),b=z.object({revision:rev,reviewer:z.string().trim().min(1).max(100)}).strict().parse(req.body);
+  store.edit(projectId,b.revision,p=>{
+    requireStage(p,'prompt',shotId);const shot=p.shots.find(s=>s.id===shotId);validateShot(store,p,shot);
+    p.pipeline.promptInputs[shotId]=promptSourceHash(p,shot);p.approval=null;
+    store.event(projectId,'prompt-reviewed',{shotId,reviewer:b.reviewer,at:now()});
+  },'pipeline-prompt-reviewed');res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/shots',(req,res)=>{
   const b=z.object({revision:rev,shot:shotSchema,afterId:uuid.optional()}).strict().parse(req.body),projectId=getId(req);
@@ -104,7 +146,7 @@ app.post('/api/projects/:id/shot-order',(req,res)=>{
 });
 app.post('/api/projects/:id/approve',(req,res)=>{
   const b=z.object({revision:rev,reviewer:z.string().trim().min(1).max(100)}).strict().parse(req.body),projectId=getId(req);
-  store.edit(projectId,b.revision,p=>{validatePlan(store,p);p.planWarnings=[];p.approval={owner:'Sean',reviewer:b.reviewer,at:now(),hash:approvalHash(p)};store.event(projectId,'human-approved',p.approval);});res.json(store.view(projectId));
+  store.edit(projectId,b.revision,p=>{if(!pipelineStatus(p).ready)fail('请先确认剧本与拍摄本，并更新过期或缺失的提示词',409);validatePlan(store,p);p.planWarnings=[];p.approval={owner:'Sean',reviewer:b.reviewer,at:now(),hash:approvalHash(p)};store.event(projectId,'human-approved',p.approval);});res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/candidates',(req,res)=>{
   const b=z.object({revision:rev,shotId:uuid,parentId:uuid.nullable().optional(),retryExact:z.boolean().optional()}).strict().parse(req.body),projectId=getId(req);
@@ -134,7 +176,7 @@ app.post('/api/projects/:id/assemble',async(req,res)=>{
   if(assembling)fail('已有成片正在合成',409);assembling=true;
   try{await runJob(projectId,b.revision,'assemble',()=>assemble(store,projectId,b.revision));res.json(store.view(projectId));}finally{assembling=false;}
 });
-app.get('/api/projects/:id/export',(req,res)=>res.attachment('sean-film-project.json').json(store.view(getId(req))));
+app.get('/api/projects/:id/export',(req,res)=>{const projectId=getId(req);res.attachment('sean-film-project.json').json({...store.view(projectId),jobs:store.jobs(projectId),planningVersions:store.planningVersions(projectId)});});
 app.get('/api/projects/:id/media/:hash',(req,res)=>{
   const projectId=getId(req),h=req.params.hash,view=store.view(projectId);
   const asset=view.snapshots.flatMap(s=>Object.values(s.assets)).find(a=>a.hash===h);

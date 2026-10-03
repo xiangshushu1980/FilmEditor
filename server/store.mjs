@@ -19,6 +19,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, input TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cuts(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS planning_versions(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE TRIGGER IF NOT EXISTS frozen_planning_update BEFORE UPDATE ON planning_versions BEGIN SELECT RAISE(ABORT,'immutable planning version'); END;
+      CREATE TRIGGER IF NOT EXISTS frozen_planning_delete BEFORE DELETE ON planning_versions BEGIN SELECT RAISE(ABORT,'immutable planning version'); END;
       CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_update BEFORE UPDATE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_delete BEFORE DELETE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
@@ -31,7 +34,25 @@ export class Store {
   get(projectId) { const r=this.db.prepare('SELECT body FROM projects WHERE id=?').get(projectId); if(!r)fail('项目不存在',404);return JSON.parse(r.body); }
   list() { return this.db.prepare('SELECT body FROM projects ORDER BY rowid DESC').all().map(r=>JSON.parse(r.body)); }
   save(p) {p.revision++;p.updatedAt=now();this.db.prepare('INSERT INTO projects VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(p.id,JSON.stringify(p));return p;}
-  edit(projectId,revision,fn,kind='edit') {return this.transaction(()=>{const p=this.get(projectId);if(p.revision!==revision)fail('项目已被更新，请刷新后重试',409);fn(p);this.event(p.id,kind,{revision:p.revision+1});return this.save(p);});}
+  edit(projectId,revision,fn,kind='edit') {return this.transaction(()=>{
+    const p=this.get(projectId);if(p.revision!==revision)fail('项目已被更新，请刷新后重试',409);
+    ensurePipeline(p);const previous=planningContent(p),before=fingerprint(previous);
+    fn(p);
+    // Explicit prompt edits count as a human revision against current inputs.
+    for(const s of p.shots) {
+      const old=previous.shots.find(v=>v.id===s.id);
+      if(old&&old.prompt!==s.prompt&&!kind.startsWith('pipeline-'))p.pipeline.promptInputs[s.id]=promptSourceHash(p,s);
+    }
+    const next=planningContent(p);
+    if(before!==fingerprint(next)) {
+      this.planningVersion(p.id,previous,'before:'+kind,p.revision);
+      this.planningVersion(p.id,next,kind,p.revision+1);
+      if(approvalHash(p)!==p.approval?.hash)p.approval=null;
+    }
+    this.event(p.id,kind,{revision:p.revision+1});return this.save(p);
+  });}
+  planningVersion(projectId,content,kind,revision) {const v={owner:'Sean',id:id(),projectId,at:now(),revision,kind,content};this.db.prepare('INSERT INTO planning_versions VALUES(?,?,?)').run(v.id,projectId,JSON.stringify(v));}
+  planningVersions(projectId) {return this.db.prepare('SELECT body FROM planning_versions WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
   snapshot(s) { this.db.prepare('INSERT INTO snapshots VALUES(?,?,?)').run(s.id,s.projectId,JSON.stringify(s)); }
   snapshots(projectId) { return this.db.prepare('SELECT body FROM snapshots WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body)); }
   candidate(c) {this.db.prepare('INSERT INTO candidates VALUES(?,?,?,?)').run(c.id,c.projectId,JSON.stringify(c.input),JSON.stringify(c));this.event(c.projectId,'candidate-created',{candidateId:c.id,parentId:c.parentId});}
@@ -44,7 +65,7 @@ export class Store {
   cut(c) {this.db.prepare('INSERT INTO cuts VALUES(?,?,?)').run(c.id,c.projectId,JSON.stringify(c));this.event(c.projectId,'assembled',{cutId:c.id,input:c.input});}
   bytes(bytes,expected) {const h=hash(bytes);if(expected&&h!==expected.replace(/^sha256:/,''))fail('素材 SHA-256 校验失败',409);const dest=path.join(this.blobs,h);if(!existsSync(dest))writeFileSync(dest,bytes,{flag:'wx'});else if(hash(readFileSync(dest))!==h)fail('本地素材损坏',409);return h;}
   read(h) {if(!/^[a-f0-9]{64}$/.test(h))fail('无效素材',400);return readFileSync(path.join(this.blobs,h));}
-  view(projectId) {return {...this.get(projectId),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId),cuts:this.cuts(projectId),jobs:this.jobs(projectId),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
+  view(projectId) {const p=this.get(projectId);ensurePipeline(p);return {...p,stages:pipelineStatus(p),planningVersions:this.planningVersions(projectId).map(({content,...v})=>v),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId),cuts:this.cuts(projectId),jobs:this.jobs(projectId).map(({input,response,result,...j})=>j),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
 }
 export function invalidate(p,entityIds=null) {
   p.approval=null; p.cutStale=true;
@@ -58,3 +79,24 @@ export function shotHash(p,s) {
   return fingerprint(shotInput(p,spec));
 }
 export function approvalHash(p) {return fingerprint({plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(s=>shotHash(p,s)),entities:p.entities});}
+export const shotContent=s=>{const {stale,selectedCandidateId,...content}=s;return content;};
+export const shotPlan=s=>{const {prompt,...content}=shotContent(s);return content;};
+export const scriptSourceHash=p=>fingerprint({plot:p.plot,entities:p.entities,targetDurationSec:p.settings.targetDurationSec});
+export const scriptContentHash=p=>fingerprint({source:scriptSourceHash(p),script:p.script,dialogue:p.dialogue});
+export const shotsSourceHash=p=>scriptContentHash(p);
+export const shotsContentHash=p=>fingerprint({source:shotsSourceHash(p),shots:p.shots.map(shotPlan)});
+export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s)});
+export function ensurePipeline(p) {
+  if(p.pipeline)return;
+  const approved=p.approval?.hash===approvalHash(p);
+  p.pipeline={owner:'Sean',script:{inputHash:scriptSourceHash(p),confirmedHash:approved?scriptContentHash(p):null},shots:{inputHash:shotsSourceHash(p),confirmedHash:approved?shotsContentHash(p):null},promptInputs:Object.fromEntries(p.shots.filter(s=>s.prompt.trim()).map(s=>[s.id,promptSourceHash(p,s)]))};
+}
+export function pipelineStatus(p) {
+  ensurePipeline(p);
+  const status=(has,record,input,content,upstream=true)=>!has?'empty':!upstream||record.inputHash!==input?'stale':record.confirmedHash===content?'confirmed':'draft';
+  const script=status(!!p.script.trim(),p.pipeline.script,scriptSourceHash(p),scriptContentHash(p));
+  const shots=status(!!p.shots.length,p.pipeline.shots,shotsSourceHash(p),shotsContentHash(p),script==='confirmed');
+  const prompts=p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'empty':shots!=='confirmed'||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':p.approval?.hash===approvalHash(p)?'confirmed':'draft'}));
+  return {script,shots,prompts,ready:shots==='confirmed'&&prompts.length>0&&prompts.every(s=>['draft','confirmed'].includes(s.status))};
+}
+export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,pipeline:structuredClone(p.pipeline)};}
