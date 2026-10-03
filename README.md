@@ -2,6 +2,8 @@
 
 Owner: Sean。Node 24 + React/Vite + Express；单页沿用 Reference 实体编辑器的深色、青绿强调色与三栏布局。此应用独立安装、运行和存储，通过 Reference Export v1 API 导入，不读取其数据库、不导入其代码，不修改 reference-workspace。
 
+任务与验证范围见 [交付记录](DELIVERY.md)；Task Center：`remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1`。
+
 ## 安装与启动
 
 ```bash
