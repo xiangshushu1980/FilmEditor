@@ -29,15 +29,17 @@ export function validateShot(store,p,shot) {
   if(/^\[Shot 1\]/.test(fields.detailed_description)||/\[Shot 1\]\s+At\s+\d/.test(fields.detailed_description))fail('风格说明须在 Shot 1 前，Shot 1 不带时间戳');
   const words=fields.detailed_description.split(/\s+/).length;
   if(words<350||words>500)fail(`detailed_description 应为 350–500 词，当前 ${words}`);
-  const subjects=new Set([...fields.subject_definitions.matchAll(/<Subject (\d+)>/g)].map(m=>m[1]));
+  // A definition may wrap across lines or share a paragraph with another entry.
+  const definitions=[...fields.subject_definitions.matchAll(/<Subject (\d+)>([\s\S]*?)(?=<(?:Subject|Audio|Video) \d+>|$)/g)];
+  const subjects=new Set(definitions.map(m=>m[1]));
   for(const match of shot.prompt.matchAll(/<(Subject|Picture|Audio|Video) (\d+)>/g)) {
     const n=Number(match[2]);
     if(match[1]==='Picture'&&(n<1||n>b.images.length)||match[1]==='Audio'&&(!b.audio||n!==1)||match[1]==='Video'||match[1]==='Subject'&&!subjects.has(match[2]))fail(`未解析引用 ${match[0]}`);
   }
   for(let i=1;i<=b.images.length;i++)if(!fields.subject_definitions.includes(`<Picture ${i}>`))fail(`subject_definitions 缺少 Picture ${i} 绑定`);
   for(const subject of subjects) {
-    const line=fields.subject_definitions.split('\n').find(l=>l.startsWith(`<Subject ${subject}>`));
-    if(!line||!/<Picture \d+>/.test(line))fail('每个 Subject 需要明确的图片绑定');
+    const definition=definitions.find(m=>m[1]===subject)?.[2];
+    if(!definition||!/<Picture \d+>/.test(definition))fail(`<Subject ${subject}> 需要在自己的定义中明确绑定 <Picture N>`);
   }
   const spokenLabels=[...fields.detailed_description.matchAll(/<d>\[([^\]]+)\]\s*([\s\S]*?)<\/d>/g)];
   const spoken=spokenLabels.map(m=>m[2].trim());
@@ -58,7 +60,13 @@ export function validateShot(store,p,shot) {
   }
   return b;
 }
-export function validatePlan(store,p) {if(!p.script.trim()||!p.shots.length)fail('请先完成剧本和镜头');if(p.shots.length>40||new Set(p.shots.map(s=>s.id)).size!==p.shots.length)fail('镜头数量或 ID 无效');for(const s of p.shots)validateShot(store,p,s);}
+export function validatePlan(store,p) {
+  if(!p.script.trim()||!p.shots.length)fail('请先完成剧本和镜头');
+  if(p.shots.length>40||new Set(p.shots.map(s=>s.id)).size!==p.shots.length)fail('镜头数量或 ID 无效');
+  const issues=[];
+  for(const [i,s] of p.shots.entries()) {try{validateShot(store,p,s);}catch(e){issues.push(`镜头 ${i+1}「${s.title}」：${e.message}`);}}
+  if(issues.length)fail(issues.join('\n'));
+}
 export function approved(p) {return p.approval?.hash===approvalHash(p);}
 export async function generatePlan(store,config,p) {
   const llm=p.settings.llm;
@@ -67,7 +75,7 @@ export async function generatePlan(store,config,p) {
   if(!p.plot.trim()||!entities.length)fail('请填写剧情并导入实体');
   const system=`You write an editable short-film script and Ref2VA shotlist. Owner: Sean. Output ONLY valid JSON, no markdown. Never use agents, tools or director services.
 Schema: {script:string,dialogue:string,shots:[{id:UUID,title:string,durationSec:number(4..15),entityIds:UUID[],imageAssetIds:UUID[],action:string,framing:string,camera:string,continuity:string,dialogue:[{speaker:entityUUID,text:string,language:string}],prompt:string,seed:integer,nativeAudioAssetId:null,verifiedAudioTranscript:""}]}. Generate new UUID shot ids. Each shot has one dominant action; total film is a sequence of independent 4–15s clips. Use only supplied entity and asset IDs. Images MUST come from that shot's entityIds, in exact imageAssetIds order. Use main appearance and multiview as identity references, not first frames. Keep entity appearance authoritative and do not invent missing facts. Human edits/approval follow; no generation yet.
-For each prompt use exactly six headings in order: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. All rewrite prose is English. Dialogue and visible writing retain original language. Bind each <Subject N> to corresponding <Picture N> images; Picture numbering follows imageAssetIds; no standalone picture entry unless a real frame anchor. summary begins [reference generation]. retention uses fully_preserved, partially_preserved, attribute_transfer or weak_reference; no speaker IDs. New action/environment are not evidence of partial preservation. detailed_description MUST have 350–500 words, a style opening before [Shot 1], then composition, single dominant action, environment/light, camera type+amplitude+speed, continuity and sound through the exact duration. [Shot 1] has no timestamp; later cuts use [Shot N] At MM:SS.mmm, increasing and strictly inside duration. Stable vocal event IDs: <Subject N> (S1) says <d>[Chinese] original exact line</d>. Every shot dialogue text appears verbatim exactly once, in order, in <d>. No unrequested dialogue beyond the approved story plan. overall_soundscape only ambience/physical sounds, not dialogue or music; non_diegetic_music is N/A by default. No Audio or Video labels: voice assets here are listening context, NOT an external locked soundtrack. Never copy source sample dialogue into the story. NativeAudioLock can only be configured later by human against actual source audio.
+For each prompt use exactly six headings in order: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. All rewrite prose is English. Dialogue and visible writing retain original language. Write each subject definition on its own line beginning with <Subject N>. Bind each <Subject N> to corresponding <Picture N> images; Picture numbering follows imageAssetIds; no standalone picture entry unless a real frame anchor. summary begins [reference generation]. retention uses fully_preserved, partially_preserved, attribute_transfer or weak_reference; no speaker IDs. New action/environment are not evidence of partial preservation. detailed_description MUST have 350–500 words, a style opening before [Shot 1], then composition, single dominant action, environment/light, camera type+amplitude+speed, continuity and sound through the exact duration. [Shot 1] has no timestamp; later cuts use [Shot N] At MM:SS.mmm, increasing and strictly inside duration. Stable vocal event IDs: <Subject N> (S1) says <d>[Chinese] original exact line</d>. Every shot dialogue text appears verbatim exactly once, in order, in <d>. No unrequested dialogue beyond the approved story plan. overall_soundscape only ambience/physical sounds, not dialogue or music; non_diegetic_music is N/A by default. No Audio or Video labels: voice assets here are listening context, NOT an external locked soundtrack. Never copy source sample dialogue into the story. NativeAudioLock can only be configured later by human against actual source audio.
 Follow the tested six-section, identity-binding, independent-shot pipeline. Maintain screen direction and story continuity. Include script/dialogue for human review.`;
   const response=await request(`${llm.baseUrl.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:AbortSignal.timeout(600000),headers:{'Content-Type':'application/json',...(config.llmKey?{Authorization:`Bearer ${config.llmKey}`}:{})},body:JSON.stringify({model:llm.model,temperature:llm.temperature,messages:[{role:'system',content:system},{role:'user',content:JSON.stringify({plot:p.plot,targetDurationSec:p.settings.targetDurationSec,entities:entities.map(e=>({entityId:e.entityId,name:e.name,description:e.description,appearance:e.appearance,voiceDescription:e.voiceDescription,flags:e.flags,missingFields:e.missingFields,assets:e.assets.map(a=>({assetId:a.assetId,role:a.role,mediaType:a.mediaType,durationSec:a.durationSec}))})),relations:store.snapshots(p.id).filter(s=>Object.values(p.entities).some(e=>e.snapshotId===s.id)).flatMap(s=>s.manifest.relations)})}]})});
   const raw=await response.json();const content=raw.choices?.[0]?.message?.content;
