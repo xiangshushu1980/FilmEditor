@@ -14,7 +14,9 @@ export const shotSchema=z.object({
 export const planSchema=z.object({script:z.string().min(1).max(40000),dialogue:z.string().max(40000),shots:z.array(shotSchema).min(1).max(40)}).strict();
 export const sections=['subject_definitions','summary','retention_analysis','detailed_description','overall_soundscape','non_diegetic_music'];
 export function validateShot(store,p,shot) {
-  shotSchema.parse(shot);
+  // Persisted shots include application state; keep the editable input schema strict.
+  const {stale,selectedCandidateId,...content}=shot;
+  shotSchema.parse(content);
   if(new Set(shot.entityIds).size!==shot.entityIds.length||new Set(shot.imageAssetIds).size!==shot.imageAssetIds.length)fail('镜头引用不能重复');
   const b=bindings(store,p,shot);
   const rx=new RegExp(`^(${sections.join('|')}):\\s*`,'gm');
