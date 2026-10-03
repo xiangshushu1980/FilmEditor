@@ -34,6 +34,8 @@ systemd-run --user --unit=sean-film-editor --description='Sean Film Editor' \
 
 端口如有占用，改 `FILM_PORT`，不要停止共享服务。需要将长驻编辑器登记到资源中心时：
 
+GPU 适配器优先查找 `~/.pi/agent/bin/hive-resource`，并为子进程补齐当前 Node 的路径，支持 systemd 启动。安装在其他位置时，可在 `.env` 设置 `FILM_HIVE_RESOURCE_BIN=/absolute/path/to/hive-resource`。
+
 ```bash
 hive-resource register service --id service:sean-film-editor --name 'Sean Film Editor' --port 4190
 ```

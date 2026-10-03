@@ -2,11 +2,22 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, unlink } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fail, now, hash } from './store.mjs';
 import { request } from './reference.mjs';
 const exec=promisify(execFile);
-const cli=(...args)=>exec('hive-resource',args,{timeout:20000,maxBuffer:1024*1024});
+export async function resourceCli(...args) {
+  const userBin=path.join(homedir(),'.pi','agent','bin');
+  const installed=path.join(userBin,'hive-resource');
+  const command=process.env.FILM_HIVE_RESOURCE_BIN||(existsSync(installed)?installed:'hive-resource');
+  // systemd does not inherit the interactive shell PATH; the CLI also needs Node.
+  const env={...process.env,PATH:[path.dirname(process.execPath),userBin,process.env.PATH||'/usr/local/bin:/usr/bin:/bin'].join(path.delimiter)};
+  try{return await exec(command,args,{env,timeout:20000,maxBuffer:1024*1024});}
+  catch(e){if(e.code==='ENOENT')fail('找不到资源管理命令；请设置 FILM_HIVE_RESOURCE_BIN 为 hive-resource 的可执行文件绝对路径',503);throw e;}
+}
+const cli=resourceCli;
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export const model={unet:'minimax_h3_ref2va_pruned_int8_convrot.safetensors',clip:'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',videoVae:'minimax_h3_video_vae_fp16.safetensors',audioVae:'minimax_h3_audio_vae_fp32.safetensors',pdd:'minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors'};
 export function graph(input,uploads,candidateId) {

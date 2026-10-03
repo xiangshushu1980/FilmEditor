@@ -13,6 +13,8 @@ Owner: Sean。日期：2026-10-03。Task Center：`remote-92ecb0d7-d1db-4bd5-8a3
 
 ## 续作补齐（2026-10-03）
 
+- 候选生成报 `spawn hive-resource ENOENT`：systemd PATH 未包含用户 CLI 目录。适配器支持标准安装绝对路径与 FILM_HIVE_RESOURCE_BIN 配置，并补齐 Node 路径供 CLI shebang 使用；最小 PATH 下实际只读 occupancy 调用通过。失败候选保留且 promptId 为空，未自动重试或提交 GPU 任务。只重启编辑器，保留用户当前 GPU 开关。
+
 - 用户授权主动检测和修订后，检查实际五镜项目发现镜头 2/3/5 对白为 `zh-CN`、prompt 为 `[Chinese]`，文字逐字一致。经编辑 API 将这三镜语言统一为 Chinese，保存 shot-version 历史，项目 revision 7→10；prompt/台词正文未改，未重新请求 LLM 或 GPU。
 - 校验器识别明确语言别名，普通话与粤语保持区分；生成器要求 dialogue.language 与 prompt 使用同一自然语言标签。实跑 validateShot 五镜和 validatePlan 全部通过，并验证语言别名通过、不同语言/无绑定 Subject/对白改字被拒绝。本次运行检查由用户明确授权；人工 approval 仍为 null，等待用户确认。
 
