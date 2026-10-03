@@ -100,7 +100,7 @@ export function confirmStage(store,p,stage,reviewer) {
 export function requireStage(p,stage,shotId) {
   const state=pipelineStatus(p);
   if(stage==='shots'&&state.script!=='confirmed')fail('请先确认当前剧本与对白',409);
-  if(stage==='prompt') {
+  if(stage==='prompt'||stage==='revision') {
     if(state.shots!=='confirmed')fail('请先确认当前拍摄本',409);
     if(!p.shots.some(s=>s.id===shotId))fail('镜头不存在',404);
   }
@@ -109,8 +109,8 @@ const scriptSchema=z.object({script:z.string().min(1).max(40000),dialogue:z.stri
 const shotlistSchema=z.object({shots:z.array(shotSchema.omit({id:true,prompt:true,seed:true,nativeAudioAssetId:true,verifiedAudioTranscript:true})).min(1).max(40)}).strict();
 const promptSchema=z.object({prompt:z.string().min(1).max(30000)}).strict();
 const referenceInstructions=`For each prompt use exactly six headings in order: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. All rewrite prose is English. Dialogue and visible writing retain original language. Write each subject definition on its own line beginning with <Subject N>. Bind each <Subject N> to corresponding <Picture N> images; Picture numbering follows imageAssetIds; no standalone picture entry unless a real frame anchor. summary begins [reference generation]. retention uses fully_preserved, partially_preserved, attribute_transfer or weak_reference; no speaker IDs. New action/environment are not evidence of partial preservation. detailed_description MUST have 350–500 words, a style opening before [Shot 1], then composition, single dominant action, environment/light, camera type+amplitude+speed, continuity and sound through the exact duration. [Shot 1] has no timestamp; later cuts use [Shot N] At MM:SS.mmm, increasing and strictly inside duration. Stable vocal event IDs: <Subject N> (S1) says <d>[Chinese] original exact line</d>. Set dialogue.language to the same natural-language label used inside <d>, such as Chinese, English or Cantonese; do not use locale codes such as zh-CN. Every shot dialogue text appears verbatim exactly once, in order, in <d>. No unrequested dialogue beyond the approved story plan. overall_soundscape only ambience/physical sounds, not dialogue or music; non_diegetic_music is N/A by default. No Audio or Video labels: voice assets here are listening context, NOT an external locked soundtrack. Never copy source sample dialogue into the story. NativeAudioLock can only be configured later by human against actual source audio.
-Follow the tested six-section, identity-binding, independent-shot pipeline. Maintain screen direction and story continuity. Include script/dialogue for human review.`;
-export async function generateStage(store,config,p,stage,shotId,capture) {
+Follow the tested six-section, identity-binding, independent-shot pipeline. Maintain screen direction and story continuity.`;
+export async function generateStage(store,config,p,stage,shotId,capture,feedback) {
   const llm=p.settings.llm;
   if(!llm.baseUrl||!llm.model)fail('请先设置 LLM 接口和模型');
   const entities=inventory(store,p);
@@ -129,10 +129,17 @@ export async function generateStage(store,config,p,stage,shotId,capture) {
     Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,confirmedShot:shotPlan(shot),shotOrder:p.shots.map(s=>({id:s.id,title:s.title,action:s.action,continuity:s.continuity}))});
     instructions=referenceInstructions+'\nThis request returns ONLY {prompt:string} for confirmedShot. Do not return or rewrite script, dialogue, shot fields, IDs or reference order. Preserve every approved dialogue line exactly once in the prompt using its language label. Use the confirmed nativeAudioAssetId and verifiedAudioTranscript only if present: declare audio reuse, <Audio 1> and fully_copy. Otherwise no Audio labels. Output a complete six-section Ref2VA prompt for this one clip.';schema=promptSchema;
   }
+  if(stage==='revision') {
+    instructions=instructions.replace('This request returns ONLY {prompt:string}', 'This request returns ONLY {prompt:string,changes:string[]}');
+    context.feedback=feedback;
+    context.currentPrompt=p.shots.find(s=>s.id===shotId).prompt;
+    instructions+= '\nRevise currentPrompt based on the user observed problem and desired correction. Return ONLY {prompt:string,changes:string[]}; changes are concise Chinese explanations. Preserve approved dialogue, identities, image order, duration and story beats. Resolve orientation explicitly using body facing, gaze, screen position and spatial anchors, but never invent an unspecified desired direction. Do not claim to have viewed video: only the user description and candidate prompt are supplied. If feedback requires changing approved shot actions, explain that conflict in changes and preserve the approved action.';
+    schema=z.object({prompt:z.string().min(1).max(30000),changes:z.array(z.string().max(2000)).max(20)}).strict();
+  }
   const system=base+instructions;
   const response=await request(`${llm.baseUrl.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:AbortSignal.timeout(600000),headers:{'Content-Type':'application/json',...(config.llmKey?{Authorization:`Bearer ${config.llmKey}`}:{})},body:JSON.stringify({model:llm.model,temperature:llm.temperature,messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(context)}]})});
   const raw=await response.json(),content=raw.choices?.[0]?.message?.content;
-  const provenance={owner:'Sean',stage,shotId:shotId||null,provider:'openai-compatible',baseUrl:llm.baseUrl,model:llm.model,temperature:llm.temperature,responseId:raw.id||null,usage:raw.usage||null,systemPrompt:system,rawResponse:typeof content==='string'?content:null};
+  const provenance={owner:'Sean',stage,shotId:shotId||null,provider:'openai-compatible',baseUrl:llm.baseUrl,model:llm.model,temperature:llm.temperature,responseId:raw.id||null,usage:raw.usage||null,cachedTokens:raw.usage?.prompt_tokens_details?.cached_tokens??raw.usage?.input_tokens_details?.cached_tokens??raw.usage?.prompt_cache_hit_tokens??null,systemPrompt:system,rawResponse:typeof content==='string'?content:null};
   capture(provenance);
   if(typeof content!=='string')fail('LLM 未返回文本',502);
   let result;try{result=schema.parse(JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/g,'')));}catch(e){fail(`LLM 结果格式错误: ${e.message.slice(0,1000)}`,502);}
@@ -142,6 +149,6 @@ export async function generateStage(store,config,p,stage,shotId,capture) {
   }
   // Keep editable prompt drafts even if semantic checks need human correction.
   const warnings=[];
-  if(stage==='prompt')try{validateShot(store,p,{...p.shots.find(s=>s.id===shotId),prompt:result.prompt});}catch(e){warnings.push({shotId,title:p.shots.find(s=>s.id===shotId).title,message:e.message});}
+  if(stage==='prompt'||stage==='revision')try{validateShot(store,p,{...p.shots.find(s=>s.id===shotId),prompt:result.prompt});}catch(e){warnings.push({shotId,title:p.shots.find(s=>s.id===shotId).title,message:e.message});}
   return {result,provenance:{...provenance,warnings}};
 }
