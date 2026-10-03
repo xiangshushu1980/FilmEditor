@@ -1,6 +1,6 @@
 // Owner: Sean — one-page review/editor UI, independent of Reference workspace.
 import React,{useState,useEffect,useRef} from 'react';
-const label={queued:'排队',submitting:'提交中',running:'生成中',recovering:'恢复中',uncertain:'待核查',succeeded:'已完成',failed:'失败'};
+const label={queued:'排队',submitting:'提交中',running:'执行中',recovering:'恢复中',uncertain:'待核查',succeeded:'已完成',failed:'失败',interrupted:'已中断'};
 const roles={main_appearance:'主形象',three_view:'多视图',voice:'基础声音',sound_effect:'音效'};
 async function api(route,body,method='POST') {
   const response=await fetch('/api'+route,body?{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
@@ -84,6 +84,7 @@ export default function App() {
             <Field label="故事梗概"><textarea rows={3} placeholder="发生在哪里？谁想做什么？故事如何结束？" value={draft?.plot||''} onChange={e=>setField('plot',e.target.value)}/></Field>
             <div className="script-fields"><Field label="剧本 · 可编辑"><textarea rows={5} placeholder="LLM 生成后可在这里修改，也可直接写入剧本。" value={draft?.script||''} onChange={e=>setField('script',e.target.value)}/></Field><Field label="对白总稿 · 可编辑"><textarea rows={5} placeholder="审阅角色对白和语气；逐镜对白在右栏编辑。" value={draft?.dialogue||''} onChange={e=>setField('dialogue',e.target.value)}/></Field></div>
           </section>
+          {!!p.jobs?.length&&<details><summary>任务记录 · {p.jobs.length} 次</summary>{[...p.jobs].reverse().map(j=><p key={j.id}>{j.kind==='plan'?'编写剧本与拍摄本':'合成成片'} · {label[j.status]||j.status} · {new Date(j.createdAt).toLocaleString()}{j.error&&<span className="error-text"> · {j.error}</span>}</p>)}</details>}
           <div className="section-head shotlist-head"><div><h2>拍摄本</h2><small className="muted">逐镜编辑、预览与挑选</small></div><div className="row"><button disabled={!!busy||!entities.length||dirty} onClick={addShot}>＋ 添加镜头</button><button className="primary" disabled={!!busy||dirty||!p.shots.length||!!p.approval} onClick={()=>work('审核当前剧本',async()=>{clean();apply(await action('approve',{reviewer:'Sean'}));setMessage('人工审核已记录，可以逐镜生成');})}>批准剧本与拍摄本</button></div></div>
           {!!p.planWarnings?.length&&<details className="plan-warnings"><summary>LLM 初稿有 {p.planWarnings.length} 项需修正，审核前请检查</summary>{p.planWarnings.map(w=><p key={w.shotId} className="error-text">{w.title}：{w.message}</p>)}</details>}
           <div className="shot-list">{p.shots.map((s,i)=>{

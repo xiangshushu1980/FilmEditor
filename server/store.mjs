@@ -18,6 +18,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidates(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, input TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cuts(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, projectId TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_update BEFORE UPDATE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_delete BEFORE DELETE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
@@ -37,17 +38,20 @@ export class Store {
   candidates(projectId) {return this.db.prepare('SELECT body FROM candidates WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
   updateCandidate(c,patch) {Object.assign(c,patch,{updatedAt:now()});this.db.prepare('UPDATE candidates SET body=? WHERE id=?').run(JSON.stringify(c),c.id);this.event(c.projectId,'candidate-status',{id:c.id,status:c.status,error:c.error});}
   cuts(projectId) {return this.db.prepare('SELECT body FROM cuts WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
+  jobs(projectId) {return this.db.prepare('SELECT body FROM jobs WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
+  job(j) {this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(j.id,j.projectId,JSON.stringify(j));this.event(j.projectId,'job-status',{jobId:j.id,kind:j.kind,status:j.status,error:j.error});}
+  recoverJobs() {for(const p of this.list())for(const j of this.jobs(p.id))if(j.status==='running')this.job({...j,status:'interrupted',finishedAt:now(),error:'服务重启中断；未自动重复调用，请检查项目后手动重试。'});}
   cut(c) {this.db.prepare('INSERT INTO cuts VALUES(?,?,?)').run(c.id,c.projectId,JSON.stringify(c));this.event(c.projectId,'assembled',{cutId:c.id,input:c.input});}
   bytes(bytes,expected) {const h=hash(bytes);if(expected&&h!==expected.replace(/^sha256:/,''))fail('素材 SHA-256 校验失败',409);const dest=path.join(this.blobs,h);if(!existsSync(dest))writeFileSync(dest,bytes,{flag:'wx'});else if(hash(readFileSync(dest))!==h)fail('本地素材损坏',409);return h;}
   read(h) {if(!/^[a-f0-9]{64}$/.test(h))fail('无效素材',400);return readFileSync(path.join(this.blobs,h));}
-  view(projectId) {return {...this.get(projectId),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId),cuts:this.cuts(projectId),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
+  view(projectId) {return {...this.get(projectId),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId),cuts:this.cuts(projectId),jobs:this.jobs(projectId),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
 }
 export function invalidate(p,entityIds=null) {
   p.approval=null; p.cutStale=true;
   for(const s of p.shots) if(!entityIds||s.entityIds.some(e=>entityIds.includes(e))) {s.stale=true;s.selectedCandidateId=null;}
 }
 export function shotInput(p,s) {
-  return {shot:s,script:p.script,dialogue:p.dialogue,render:p.settings.render,snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
+  return {shot:s,plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
 }
 export function shotHash(p,s) {
   const {selectedCandidateId,stale,...spec}=s;

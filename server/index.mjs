@@ -15,6 +15,21 @@ const config={referenceUrl:localUrl(process.env.REFERENCE_URL||'http://127.0.0.1
 const settingsSchema=z.object({llm:z.object({baseUrl:url,model:z.string().max(200),temperature:z.number().min(0).max(2)}).strict(),targetDurationSec:z.number().int().min(4).max(600),render:z.object({width:z.number().int().min(256).max(1344).multipleOf(64),height:z.number().int().min(256).max(768).multipleOf(64)}).strict()}).strict();
 const defaultSettings={llm:{baseUrl:process.env.LLM_BASE_URL||'https://api.openai.com/v1',model:process.env.LLM_MODEL||'',temperature:0.7},targetDurationSec:30,render:{width:1024,height:576}};
 const store=new Store(path.resolve(process.env.FILM_DATA_DIR||path.join(root,'.data')));
+store.recoverJobs();
+const activeJobs=new Set();
+async function runJob(projectId,revision,kind,execute) {
+  const key=`${projectId}:${kind}`;
+  if(activeJobs.has(key))fail('同类任务正在执行，请等待',409);
+  const p=store.get(projectId);if(p.revision!==revision)fail('项目已更新',409);
+  const job={owner:'Sean',id:id(),projectId,kind,status:'running',createdAt:now(),input:{revision,approvalHash:approvalHash(p),settings:p.settings,entitySnapshots:p.entities,selectedCandidateIds:p.shots.map(s=>s.selectedCandidateId)}};
+  activeJobs.add(key);
+  try {
+    store.job(job);
+    await execute();
+    store.job({...job,status:'succeeded',finishedAt:now(),output:{revision:store.get(projectId).revision,cutId:kind==='assemble'?store.get(projectId).selectedCutId:null}});
+  }catch(e){store.job({...job,status:'failed',finishedAt:now(),error:e.message});throw e;}
+  finally{activeJobs.delete(key);}
+}
 const comfy=new ComfyAdapter(store,config), app=express();
 app.disable('x-powered-by');
 app.use((req,res,next)=>{
@@ -63,13 +78,17 @@ app.get('/api/projects/:id/inventory',(req,res)=>res.json(inventory(store,store.
 app.post('/api/projects/:id/plan',async(req,res)=>{
   const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
   if(p.revision!==b.revision)fail('项目已更新',409);
-  const {result,provenance}=await generatePlan(store,config,p);
-  store.edit(projectId,b.revision,current=>{store.event(projectId,'plan-version',{previous:{script:current.script,dialogue:current.dialogue,shots:current.shots},result,provenance});Object.assign(current,result);current.planWarnings=provenance.warnings;invalidate(current);},'plan-generated');res.json(store.view(projectId));
+  await runJob(projectId,b.revision,'plan',async()=>{
+    const {result,provenance}=await generatePlan(store,config,p);
+    store.edit(projectId,b.revision,current=>{store.event(projectId,'plan-version',{previous:{script:current.script,dialogue:current.dialogue,shots:current.shots},result,provenance});Object.assign(current,result);current.planWarnings=provenance.warnings;invalidate(current);},'plan-generated');
+  });res.json(store.view(projectId));
 });
 app.post('/api/projects/:id/shots',(req,res)=>{
   const b=z.object({revision:rev,shot:shotSchema,afterId:uuid.optional()}).strict().parse(req.body),projectId=getId(req);
   store.edit(projectId,b.revision,p=>{
     if(p.shots.some(s=>s.id===b.shot.id))fail('镜头 ID 已存在',409);
+    if(p.shots.length>=40)fail('每个短片最多 40 个镜头');
+    if(b.afterId&&!p.shots.some(s=>s.id===b.afterId))fail('插入位置的镜头不存在',404);
     const s={...b.shot,stale:true,selectedCandidateId:null};const i=b.afterId?p.shots.findIndex(s=>s.id===b.afterId)+1:p.shots.length;p.shots.splice(i,0,s);p.approval=null;p.cutStale=true;
     store.event(projectId,'shot-created',{shot:s});
   });res.status(201).json(store.view(projectId));
@@ -99,7 +118,7 @@ app.post('/api/projects/:id/candidates',(req,res)=>{
     const parent=b.parentId?candidates.find(c=>c.id===b.parentId):candidates.at(-1);
     if(b.parentId&&!parent)fail('父候选不存在');
     const {stale,selectedCandidateId,...spec}=shot;
-    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,approval:p.approval,model,adapterVersion:'sean-ref2va@1'};
+    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,approval:p.approval,model,adapterVersion:'sean-ref2va@2'};
     if(b.retryExact&&(!parent||parent.input.shotHash!==input.shotHash))fail('原输入已失效，请按当前内容新建候选');
     c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:b.retryExact?parent.input:input};store.candidate(c);
   });
@@ -113,7 +132,7 @@ let assembling=false;
 app.post('/api/projects/:id/assemble',async(req,res)=>{
   const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req);
   if(assembling)fail('已有成片正在合成',409);assembling=true;
-  try{await assemble(store,projectId,b.revision);res.json(store.view(projectId));}finally{assembling=false;}
+  try{await runJob(projectId,b.revision,'assemble',()=>assemble(store,projectId,b.revision));res.json(store.view(projectId));}finally{assembling=false;}
 });
 app.get('/api/projects/:id/export',(req,res)=>res.attachment('sean-film-project.json').json(store.view(getId(req))));
 app.get('/api/projects/:id/media/:hash',(req,res)=>{
@@ -134,4 +153,6 @@ if(process.argv.includes('--dev')) {const {createServer}=await import('vite');co
 else {app.use(express.static(path.join(root,'dist')));app.get('/{*path}',(_req,res)=>res.sendFile(path.join(root,'dist/index.html')));}
 app.use((err,_req,res,_next)=>res.status(err instanceof z.ZodError?400:err.status||500).json({error:err instanceof z.ZodError?'字段校验失败':err.message,details:err instanceof z.ZodError?err.issues:undefined}));
 const port=Number(process.env.FILM_PORT||4190);if(!Number.isInteger(port)||port<1024||port>65535)fail('FILM_PORT 无效');
-app.listen(port,'127.0.0.1',()=>{console.log(`Owner: Sean · Film editor http://127.0.0.1:${port} · GPU ${config.enableGpu?'enabled':'disabled'}`);void comfy.recover();});
+const server=app.listen(port,'127.0.0.1',()=>{console.log(`Owner: Sean · Film editor http://127.0.0.1:${port} · GPU ${config.enableGpu?'enabled':'disabled'}`);void comfy.recover().catch(e=>console.error('候选恢复失败:',e.message));});
+server.on('error',error=>{console.error(`短片编辑器启动失败: ${error.message}`);process.exit(1);});
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>{server.close();process.exit(0);});

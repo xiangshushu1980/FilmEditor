@@ -17,6 +17,21 @@ npm start
 
 打开 **http://127.0.0.1:4190**。开发模式为 `npm run dev`，Vite 中间件和 API 共用4190，不另开前端端口。需要 Node >=24、系统 FFmpeg/ffprobe；`hive-resource` 只有开启 GPU 预览时才需要。应用不会启动或重启 Reference/ComfyUI；由现有服务管理方式提供 Reference 4188、ComfyUI 8188。
 
+2026-10-03 续作已启动独立的 systemd 用户服务 `sean-film-editor.service`，GPU 关闭。服务状态与停止命令：
+
+```bash
+systemctl --user status sean-film-editor.service
+systemctl --user stop sean-film-editor.service
+```
+
+该服务为本次启动的 transient unit；系统重启后使用上面的 `npm start`，或在 film-editor 目录中重新托管：
+
+```bash
+systemd-run --user --unit=sean-film-editor --description='Sean Film Editor' \
+  --working-directory="$PWD" --setenv=FILM_ENABLE_GPU=0 \
+  "$(realpath "$(command -v node)")" --env-file-if-exists=.env server/index.mjs
+```
+
 端口如有占用，改 `FILM_PORT`，不要停止共享服务。需要将长驻编辑器登记到资源中心时：
 
 ```bash
@@ -53,6 +68,10 @@ hive-resource register service --id service:sean-film-editor --name 'Sean Film E
 ## 数据与恢复
 
 默认存储 `film-editor/.data/film.sqlite` + `.data/blobs/<sha256>`，可用 `FILM_DATA_DIR` 指定持久位置。重启应用保留项目与全部媒体；SQLite WAL/事务和 revision 校验保护并发编辑，SQL trigger 禁止修改/删除快照和成片、禁止改候选原输入。候选状态与追加事件保留执行演进，项目 JSON 导出可审查；JSON **不包含素材字节**。
+
+LLM 编写和 CPU 合成也保存独立任务记录：输入修订/参数/快照引用、开始与结束时间、成功或错误状态。同项目重复编写请求在执行期间被拒绝。重启后仍在执行的记录标记为“已中断”，保留历史并等待手动重试，不自动重复付费请求。LLM 请求上限为 10 分钟。拍摄本上方“任务记录”可查看这些状态。
+
+剧情参与候选输入哈希；修改剧情会使旧候选失效。2026-10-03 本轮补齐这一字段后，此前版本产生的候选会按旧输入失效，需要重新生成。
 
 备份须保存整个数据目录。停编辑器后复制整个 `.data`，或用 SQLite 在线备份再复制 blobs；不要只拷贝运行中 `film.sqlite` 忽略 WAL。不提供自动垃圾回收、删除或覆盖旧版本。
 

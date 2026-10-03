@@ -1,7 +1,7 @@
 // Owner: Sean — public Reference Export v1 only; no internal files or DB imports.
 import { id, now, fail, fingerprint, canonical, hash, invalidate } from './store.mjs';
 export async function request(url, options={}) {
-  const response=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(60000)});
+  const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(60000),...options});
   if(!response.ok)fail(`上游请求失败 (${response.status}): ${(await response.text()).slice(0,1500)}`,502);
   return response;
 }
