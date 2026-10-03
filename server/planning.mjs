@@ -74,7 +74,7 @@ export function validatePlan(store,p) {
   for(const [i,s] of p.shots.entries()) {try{validateShot(store,p,s);}catch(e){issues.push(`镜头 ${i+1}「${s.title}」：${e.message}`);}}
   if(issues.length)fail(issues.join('\n'));
 }
-export function approved(p) {return p.approval?.hash===approvalHash(p);}
+export function approved(p,shotId=null) {return p.approval?.hash===approvalHash(p)&&(!p.approval.scope||p.approval.scope==='project'||p.approval.shotId===shotId);}
 export function validateShotlist(store,p) {
   if(!p.shots.length||p.shots.length>40||new Set(p.shots.map(s=>s.id)).size!==p.shots.length)fail('请填写 1–40 个镜头，ID 不可重复');
   for(const s of p.shots) {
@@ -97,6 +97,26 @@ export function confirmStage(store,p,stage,reviewer) {
   }
   p.approval=null;
   store.event(p.id,'stage-confirmed',{stage,reviewer,at:now(),hash:p.pipeline[stage].confirmedHash});
+}
+// Owner: Sean — using current saved inputs is an explicit generation action, not a separate human approval.
+export function prepareCurrentInputs(store,p,stage,shotId) {
+  ensurePipeline(p);
+  if(stage==='script')return;
+  if(!p.plot.trim()||!p.script.trim()||!Object.keys(p.entities).length)fail('请先完成剧情、实体与剧本');
+  p.pipeline.script={inputHash:scriptSourceHash(p),confirmedHash:scriptContentHash(p),mode:'generation-input',at:now()};
+  if(stage==='shots')return;
+  const target=['prompt','revision','video'].includes(stage)?p.shots.find(s=>s.id===shotId):null;
+  if(['prompt','revision','video'].includes(stage)&&!target)fail('镜头不存在',404);
+  validateShotlist(store,target?{...p,shots:[target]}:p);
+  p.pipeline.shots={inputHash:shotsSourceHash(p),confirmedHash:shotsContentHash(p),mode:'generation-input',scope:target?'shot':'project',shotId:target?.id,at:now()};
+  if(stage==='video') {
+    if(p.spatialPlan&&!currentSpatialPlan(p))fail('共用空间和站位已过期，请先修订拍摄本中的全片空间与提示词',409);
+    const shot=p.shots.find(s=>s.id===shotId);if(!shot)fail('镜头不存在',404);
+    validateShot(store,p,shot);
+    if(p.pipeline.promptInputs[shot.id]!==promptSourceHash(p,shot))fail('本镜提示词来源已变化，请根据当前拍摄安排或空间说明更新提示词后再生成',409);
+    p.pipeline.promptInputs[shot.id]=promptSourceHash(p,shot);
+    p.approval={owner:'Sean',scope:'shot',shotId,mode:'direct-generation',at:now(),inputRevision:p.revision+1,hash:approvalHash(p)};
+  }
 }
 export function requireStage(p,stage,shotId) {
   const state=pipelineStatus(p);
@@ -131,9 +151,9 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
     Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue});
     instructions='Create ONLY the editable shotlist from the confirmed script and dialogue, without rewriting either. Schema {shots:[{title:string,durationSec:number(4..15),entityIds:UUID[],imageAssetIds:UUID[],action:string,framing:string,camera:string,continuity:string,dialogue:[{speaker:entityUUID,text:string,language:string}]}]}. Split into independent clips, one dominant action each, with continuity and ordered image references belonging to selected entities. Use exact approved dialogue in order, without additions, omissions or paraphrases. dialogue.language uses natural names Chinese/English/Cantonese, not locale codes. Do not produce prompt, id, seed or audio-lock fields.';schema=shotlistSchema;
   }else if(stage==='spatial') {
-    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:bindings(store,p,s).images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId}))}))});
+    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,currentFilmSpaceInstructions:p.spatialPlan?.scenePlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:bindings(store,p,s).images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId}))}))});
     if(spatialRevision)Object.assign(context,{reviewedProposal:spatialRevision.draft,revisionRequest:spatialNotes||'',validationIssues:spatialRevision.draft.shots.flatMap(item=>{try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt});return [];}catch(e){return [{shotId:item.id,message:e.message}];}})});
-    instructions=referenceInstructions+'\n'+spatialInstructions+'\nReturn ONLY {scenePlan:string,questions:string[],shots:[{id:existingUUID,framing:string,continuity:string,startState:string,endState:string,transitionFromPrevious:string,prompt:string,changes:string[]}]}. Cover every existing shot exactly once in the existing order. Write scenePlan, physical start/end states, transition explanations, changes and questions in Chinese for human review, and complete video prompts in English with original dialogue. First establish one shared scene plan for each location, separate authoritative facts from proposed film blocking. Do not treat previous prompts or previousSpatialPlan as authoritative scene evidence: repair their invented furniture or spatial contradictions. startState/endState record physical states, not camera composition; explain all non-contiguous states in transitionFromPrevious. Return questions:[] only when there is enough evidence to draft consistent blocking without inventing material scene facts. For each shot with nativeAudioAssetId, preserve the verifiedAudioTranscript and declare audio reuse, <Audio 1> and fully_copy; otherwise no Audio labels. Never return a modified script, dialogue, action, camera, cast, references or duration.';schema=spatialSchema;
+    instructions=referenceInstructions+'\n'+spatialInstructions+'\nReturn ONLY {scenePlan:string,questions:string[],shots:[{id:existingUUID,framing:string,continuity:string,startState:string,endState:string,transitionFromPrevious:string,prompt:string,changes:string[]}]}. Cover every existing shot exactly once in the existing order. Write scenePlan, physical start/end states, transition explanations, changes and questions in Chinese for human review, and complete video prompts in English with original dialogue. First establish one shared scene plan for each location, separate authoritative facts from proposed film blocking. currentFilmSpaceInstructions contains user-editable film blocking requirements; honor them where consistent with entity facts and approved actions, and list material conflicts as questions. Do not treat previous prompts or previousSpatialPlan as authoritative scene evidence: repair their invented furniture or spatial contradictions. startState/endState record physical states, not camera composition; explain all non-contiguous states in transitionFromPrevious. Return questions:[] only when there is enough evidence to draft consistent blocking without inventing material scene facts. For each shot with nativeAudioAssetId, preserve the verifiedAudioTranscript and declare audio reuse, <Audio 1> and fully_copy; otherwise no Audio labels. Never return a modified script, dialogue, action, camera, cast, references or duration.';schema=spatialSchema;
     if(spatialRevision)instructions+='\nRevise the supplied reviewedProposal using revisionRequest and validationIssues. Preserve human edits where compatible with authoritative entities and approved shots. Resolve questions only when the user supplied sufficient answers; retain unresolved questions. Never silently change approved actions or duration to resolve timing. Correct the six-section format including moving the style opening BEFORE [Shot 1]. Return a new complete proposal for human review, not automatic adoption.';
   }else {
     const shot=p.shots.find(s=>s.id===shotId);

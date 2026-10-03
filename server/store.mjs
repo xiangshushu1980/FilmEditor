@@ -65,7 +65,7 @@ export class Store {
   cut(c) {this.db.prepare('INSERT INTO cuts VALUES(?,?,?)').run(c.id,c.projectId,JSON.stringify(c));this.event(c.projectId,'assembled',{cutId:c.id,input:c.input});}
   bytes(bytes,expected) {const h=hash(bytes);if(expected&&h!==expected.replace(/^sha256:/,''))fail('素材 SHA-256 校验失败',409);const dest=path.join(this.blobs,h);if(!existsSync(dest))writeFileSync(dest,bytes,{flag:'wx'});else if(hash(readFileSync(dest))!==h)fail('本地素材损坏',409);return h;}
   read(h) {if(!/^[a-f0-9]{64}$/.test(h))fail('无效素材',400);return readFileSync(path.join(this.blobs,h));}
-  view(projectId) {const p=this.get(projectId);ensurePipeline(p);return {...p,stages:pipelineStatus(p),planningVersions:this.planningVersions(projectId).map(({content,...v})=>v),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId).map(c=>({...c,isCurrent:p.shots.some(s=>s.id===c.shotId&&c.input.shotHash===shotHash(p,s))})),cuts:this.cuts(projectId),jobs:this.jobs(projectId).map(({input,response,result,...j})=>({...j,inputRevision:input?.revision??null})),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
+  view(projectId) {const p=this.get(projectId);ensurePipeline(p);return {...p,stages:pipelineStatus(p),generationState:generationStatus(p),planningVersions:this.planningVersions(projectId).map(({content,...v})=>v),snapshots:this.snapshots(projectId),candidates:this.candidates(projectId).map(c=>({...c,isCurrent:p.shots.some(s=>s.id===c.shotId&&c.input.shotHash===shotHash(p,s))})),cuts:this.cuts(projectId),jobs:this.jobs(projectId).map(({input,response,result,...j})=>({...j,inputRevision:input?.revision??null})),events:this.db.prepare('SELECT * FROM events WHERE projectId=? ORDER BY seq DESC LIMIT 100').all(projectId).map(e=>({...e,body:JSON.parse(e.body)}))};}
 }
 export function invalidate(p,entityIds=null) {
   p.approval=null; p.cutStale=true;
@@ -97,7 +97,13 @@ export function pipelineStatus(p) {
   const script=status(!!p.script.trim(),p.pipeline.script,scriptSourceHash(p),scriptContentHash(p));
   const shots=status(!!p.shots.length,p.pipeline.shots,shotsSourceHash(p),shotsContentHash(p),script==='confirmed');
   const spatialCurrent=!p.spatialPlan||p.spatialPlan.sourceHash===shotsContentHash(p);
-  const prompts=p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'empty':!spatialCurrent||shots!=='confirmed'||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':p.approval?.hash===approvalHash(p)?'confirmed':'draft'}));
+  const prompts=p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'empty':!spatialCurrent||shots!=='confirmed'||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':p.approval?.hash===approvalHash(p)&&(!p.approval.scope||p.approval.scope==='project'||p.approval.shotId===s.id)?'confirmed':'draft'}));
   return {script,shots,spatial:!p.spatialPlan?'empty':!spatialCurrent?'stale':shots==='confirmed'?'confirmed':'draft',prompts,ready:spatialCurrent&&shots==='confirmed'&&prompts.length>0&&prompts.every(s=>['draft','confirmed'].includes(s.status))};
+}
+// Owner: Sean — input availability is independent of the legacy manual approval gates.
+export function generationStatus(p) {
+  ensurePipeline(p);
+  const spatialStale=!!p.spatialPlan&&p.spatialPlan.sourceHash!==shotsContentHash(p);
+  return {spatialStale,prompts:p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'missing':spatialStale||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':'ready'}))};
 }
 export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,...(p.spatialPlan?{spatialPlan:structuredClone(p.spatialPlan)}:{}),pipeline:structuredClone(p.pipeline)};}
