@@ -6,6 +6,9 @@ Owner: Sean。日期：2026-10-03。Task Center：`remote-92ecb0d7-d1db-4bd5-8a3
 
 ## 续作补齐（2026-10-03）
 
+- 用户授权主动检测和修订后，检查实际五镜项目发现镜头 2/3/5 对白为 `zh-CN`、prompt 为 `[Chinese]`，文字逐字一致。经编辑 API 将这三镜语言统一为 Chinese，保存 shot-version 历史，项目 revision 7→10；prompt/台词正文未改，未重新请求 LLM 或 GPU。
+- 校验器识别明确语言别名，普通话与粤语保持区分；生成器要求 dialogue.language 与 prompt 使用同一自然语言标签。实跑 validateShot 五镜和 validatePlan 全部通过，并验证语言别名通过、不同语言/无绑定 Subject/对白改字被拒绝。本次运行检查由用户明确授权；人工 approval 仍为 null，等待用户确认。
+
 - 第二次审核反馈：现有五镜提示词将多个 Subject 定义写在同一行，各自具有 Picture 引用；原校验只查行首导致误判。绑定检查改为逐 Subject 定义范围解析，支持同段和换行；审核错误汇总并显示镜头序号/名称与缺失的 Subject。现有项目内容未改写；生成器仍要求官方的一项一行格式。
 
 - 用户验收发现批准拍摄本时，持久化镜头的 `stale` / `selectedCandidateId` 被误送入严格内容 schema；已在审核/生成共用的 validateShot 入口分离状态字段，编辑 API 与 LLM schema 继续严格校验。仅语法与差异检查，未运行测试或代用户批准剧本。
