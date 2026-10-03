@@ -42,7 +42,7 @@ app.use('/api',express.json({limit:'3mb'}));
 const rev=z.number().int().nonnegative();
 const uuid=z.string().uuid();
 const getId=req=>uuid.parse(req.params.id);
-app.get('/api/config',(_req,res)=>res.json({owner:'Sean',referenceUrl:config.referenceUrl,enableGpu:config.enableGpu,llmKeyConfigured:!!config.llmKey,defaults:defaultSettings,model,activeCandidateId:comfy.active}));
+app.get('/api/config',(_req,res)=>res.json({owner:'Sean',referenceUrl:config.referenceUrl,enableGpu:config.enableGpu,llmKeyConfigured:!!config.llmKey,defaults:defaultSettings,model,activeCandidateId:comfy.active,activeGeneration:comfy.activeInfo()}));
 app.get('/api/projects',(_req,res)=>res.json(store.list().map(p=>({id:p.id,title:p.title,updatedAt:p.updatedAt,shotCount:p.shots.length}))));
 app.post('/api/projects',(req,res)=>{
   const {title}=z.object({title:z.string().trim().min(1).max(150)}).strict().parse(req.body);

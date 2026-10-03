@@ -12,13 +12,21 @@ const promptHints='subject_definitions:\n\nsummary:\n\nretention_analysis:\n\nde
 function Field({label:caption,children}) {return <label className="field"><span>{caption}</span>{children}</label>;}
 function Badge({children,tone=''}) {return <span className={`badge ${tone}`}>{children}</span>;}
 function Prompt({text}) {return <pre className="prompt-read">{text.split(/(<(?:Subject|Picture|Audio|Video) \d+>|\[Shot \d+\]|(?:subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music):)/g).map((s,i)=>/<(?:Subject|Picture|Audio|Video)/.test(s)?<mark key={i}>{s}</mark>:/^\[Shot|:$/.test(s)?<b key={i}>{s}</b>:<React.Fragment key={i}>{s}</React.Fragment>)}</pre>;}
+function GenerationProgress({candidate,active=false}) {
+  const [clock,setClock]=useState(Date.now());
+  useEffect(()=>{if(!active)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[active]);
+  const progress=candidate.progress;
+  const elapsed=active?Math.max(0,Math.floor((clock-Date.parse(candidate.startedAt||candidate.createdAt))/1000)):Math.round(candidate.elapsedSec||0);
+  const steps=Number.isFinite(progress?.step)&&Number.isFinite(progress?.total)&&progress.total>0;
+  return <div className="generation-progress" role="status"><b>{progress?.detail||label[candidate.status]||'等待状态更新'}</b><small>{label[candidate.status]||candidate.status} · 已用时 {Math.floor(elapsed/60)}分{elapsed%60}秒{steps&&` · ${progress.nodeType==='SamplerCustomAdvanced'?'采样':'当前步骤'} ${progress.step}/${progress.total}`}</small>{active&&<progress aria-label="当前生成步骤进度" {...(steps?{value:progress.step,max:progress.total}:{})}/>}</div>;
+}
 export default function App() {
   const [projects,setProjects]=useState([]),[p,setP]=useState(null),[draft,setDraft]=useState(null),[config,setConfig]=useState(null);
   const [busy,setBusy]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState('');
   const [shotId,setShotId]=useState(''),[shotDraft,setShotDraft]=useState(null),[tab,setTab]=useState('edit');
   const [modal,setModal]=useState(''),[source,setSource]=useState(null),[selection,setSelection]=useState([]),[search,setSearch]=useState('');
   const [updates,setUpdates]=useState([]),[entityId,setEntityId]=useState(''),[zoom,setZoom]=useState(''),[newTitle,setNewTitle]=useState(''),[record,setRecord]=useState(null);
-  const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''});
+  const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''}),lastGenerationRef=useRef(null);
   const shot=p?.shots.find(s=>s.id===shotId),snapshotById=Object.fromEntries((p?.snapshots||[]).map(s=>[s.id,s]));
   const entities=Object.entries(p?.entities||{}).map(([eid,v])=>({...snapshotById[v.snapshotId]?.manifest.entities.find(e=>e.entityId===eid),snapshot:snapshotById[v.snapshotId]}));
   const assets=entities.flatMap(e=>e.assets.filter(a=>e.snapshot.assets[a.assetId]).map(a=>({...a,hash:e.snapshot.assets[a.assetId].hash})));
@@ -28,6 +36,8 @@ export default function App() {
   const shotDirty=!!shot&&!!shotDraft&&JSON.stringify(shotDraft)!==JSON.stringify(spec(shot));
   const dirty=projectDirty||shotDirty;
   interactionRef.current={dirty,busy};
+  const activeGeneration=config?.activeGeneration;
+  const generationDisabledReason=busy?`正在${busy}，请等待`:dirty?'请先保存当前修改':!shot?'请先选择镜头':!config?'正在读取生成配置':!config.enableGpu?'宿主尚未启用 GPU 预览':!p?.approval?'请先批准当前剧本与拍摄本':config.activeCandidateId?`${activeGeneration?.shotTitle||'已有镜头'}正在${activeGeneration?.progress?.detail||'生成或恢复'}；结束并释放资源后可创建新候选`:'';
   const planningBusy=!!p?.jobs?.some(j=>['script','shots','prompt'].includes(j.kind)&&j.status==='running');
   const stageStatus=(stage,target)=>p?.jobs?.some(j=>j.kind===stage&&j.status==='running'&&(!target||j.shotId===target))?'running':stage==='prompt'?p?.stages?.prompts.find(v=>v.shotId===target)?.status:p?.stages?.[stage];
   const media=h=>`/api/projects/${p.id}/media/${h}`;
@@ -42,11 +52,20 @@ export default function App() {
   function clean(){if(dirty)throw new Error('请先保存当前剧本／镜头修改，再继续。');}
   useEffect(()=>{void work('读取项目',async()=>{setConfig(await api('/config'));const list=await api('/projects');setProjects(list);const selected=new URLSearchParams(location.search).get('project')||localStorage.getItem('sean-film-project');if(list.some(p=>p.id===selected))apply(await api(`/projects/${selected}`));else if(list.length)apply(await api(`/projects/${list[0].id}`));});},[]);
   useEffect(()=>{setShotDraft(shot?spec(shot):null);},[p?.id,p?.revision,shotId]);
+  useEffect(()=>{
+    if(config?.activeGeneration){lastGenerationRef.current=config.activeGeneration;return;}
+    const previous=lastGenerationRef.current;if(!previous)return;
+    lastGenerationRef.current=null;
+    const finished=p?.candidates.find(c=>c.id===previous.candidateId);
+    if(finished?.status==='succeeded')setMessage(`镜头「${previous.shotTitle}」视频已保存，可以播放和选用；现在可创建新候选。`);
+    else if(finished?.error)setError(`镜头「${previous.shotTitle}」生成结束：${finished.error}。生成锁已释放。`);
+    else setMessage(`镜头「${previous.shotTitle}」生成锁已释放，请查看候选记录。`);
+  },[config?.activeCandidateId]);
   useEffect(()=>{const f=e=>{if(dirty){e.preventDefault();e.returnValue='';}};window.addEventListener('beforeunload',f);return()=>window.removeEventListener('beforeunload',f);},[dirty]);
   useEffect(()=>{
     if(!p)return;
     let cancelled=false;
-    const timer=setInterval(async()=>{try{const value=await api(`/projects/${p.id}`);if(cancelled||projectRef.current!==value.id)return;if(value.revision===p.revision)setP(value);else if(!interactionRef.current.dirty&&!interactionRef.current.busy)apply(value);const nextConfig=await api('/config');if(!cancelled)setConfig(nextConfig);}catch{}},5000);
+    const timer=setInterval(async()=>{try{const value=await api(`/projects/${p.id}`);if(cancelled||projectRef.current!==value.id)return;if(value.revision===p.revision)setP(value);else if(!interactionRef.current.dirty&&!interactionRef.current.busy)apply(value);const nextConfig=await api('/config');if(!cancelled)setConfig(nextConfig);}catch{}},2000);
     return()=>{cancelled=true;clearInterval(timer);};
   },[p?.id,p?.revision,dirty,busy]);
   const action=(suffix,body={})=>api(`/projects/${p.id}/${suffix}`,{revision:p.revision,...body});
@@ -70,6 +89,7 @@ export default function App() {
   const create=()=>work('创建项目',async()=>{if(!newTitle.trim())return;apply(await api('/projects',{title:newTitle}));await refreshList();setModal('');setNewTitle('');});
   return <>
     <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge tone={p?.approval?'good':''}>{p?.approval?'已人工审核':'等待审核'}</Badge><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
+    {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
     {(error||message||busy)&&<div className={`notice ${error?'error':''}`} role="status"><span>{error||busy||message}</span>{!busy&&<button className="quiet" onClick={()=>{setError('');setMessage('');}}>关闭</button>}</div>}
     <main className="workspace">
       <aside className="sidebar"><div className="section-head"><h2>短片项目</h2><button className="quiet accent" disabled={!!busy||dirty} onClick={()=>setModal('create')}>＋ 新建</button></div>
@@ -101,7 +121,7 @@ export default function App() {
           <div className="shot-list">{p.shots.map((s,i)=>{
             const c=p.candidates.find(c=>c.id===s.selectedCandidateId),current=p.candidates.filter(c=>c.shotId===s.id);
             return <article className={`shot-card ${shotId===s.id?'selected':''}`} key={s.id} onClick={()=>chooseShot(s.id)} tabIndex={0} onKeyDown={e=>{if(e.key==='Enter')chooseShot(s.id);}}>
-              <div className="shot-number">{String(i+1).padStart(2,'0')}</div><div className="shot-body"><div className="section-head"><h3>{s.title}</h3><Badge tone={s.stale?'warn':c?'good':''}>{s.stale?'需生成':c?'已选定':'待选择'}</Badge></div><p className="action-text">{s.action||'填写这一镜的主导动作'}</p><div className="shot-meta"><span>{s.durationSec}s</span><span>{s.framing||'待设景别'}</span><span>{current.length} 个候选</span></div><div className="chips">{s.entityIds.map(e=><span className="chip" key={e}>{p.entities[e]?.name||'实体已失效'}</span>)}</div></div>
+              <div className="shot-number">{String(i+1).padStart(2,'0')}</div><div className="shot-body"><div className="section-head"><h3>{s.title}</h3><Badge tone={s.stale?'warn':c?'good':''}>{s.stale?'需生成':c?'已选定':'待选择'}</Badge></div>{config?.activeCandidateId&&current.some(c=>c.id===config.activeCandidateId)&&<p className="muted compact">生成中 · {activeGeneration?.progress?.detail||'正在处理'}</p>}<p className="action-text">{s.action||'填写这一镜的主导动作'}</p><div className="shot-meta"><span>{s.durationSec}s</span><span>{s.framing||'待设景别'}</span><span>{current.length} 个候选</span></div><div className="chips">{s.entityIds.map(e=><span className="chip" key={e}>{p.entities[e]?.name||'实体已失效'}</span>)}</div></div>
               {c?.media&&<video className="shot-thumb" src={media(c.media.hash)} muted preload="metadata"/>}<div className="order-buttons"><button className="quiet" aria-label="镜头前移" disabled={i===0||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i-1);}}>↑</button><button className="quiet" aria-label="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i+1);}}>↓</button></div>
             </article>;
           })}{!p.shots.length&&<div className="empty"><span className="empty-icon">▤</span><h3>拍摄本等待你的故事</h3><p>确认剧本与对白后生成拍摄本；确认拍摄本后逐镜生成提示词。</p></div>}</div>
@@ -127,8 +147,8 @@ export default function App() {
             <details><summary>锁定已有音频</summary><p className="muted">选用录音原话作为完整音轨；先听音频、核对白，再设置匹配时长并修改提示词。</p><select aria-label="锁定音频" value={shotDraft.nativeAudioAssetId||''} onChange={e=>setShotField('nativeAudioAssetId',e.target.value||null)}><option value="">不锁定 · 按镜头对白生成</option>{assets.filter(a=>a.mediaType==='audio'&&shotDraft.entityIds.includes(a.entityId)).map(a=><option key={a.assetId} value={a.assetId}>{p.entities[a.entityId]?.name} · {a.durationSec?.toFixed(2)}s</option>)}</select>{shotDraft.nativeAudioAssetId&&<><audio controls src={media(assets.find(a=>a.assetId===shotDraft.nativeAudioAssetId)?.hash)}/><Field label="人工核对后的录音原话"><textarea rows={3} value={shotDraft.verifiedAudioTranscript} onChange={e=>setShotField('verifiedAudioTranscript',e.target.value)}/></Field></>}</details>
           </div>}
           {tab==='prompt'&&<div className="prompt-editor"><p className="muted compact">Ref2VA 六段式 · {label[stageStatus('prompt',shotId)]||'待生成'}。编辑动作或对白后，须重新确认拍摄本并更新提示词。</p><button disabled={!!busy||dirty||planningBusy||p.stages?.shots!=='confirmed'} onClick={()=>generateStage('prompt',shotId)}>生成／重试本镜提示词 ↗</button> <button disabled={!!busy||dirty||planningBusy||p.stages?.shots!=='confirmed'||!shotDraft.prompt.trim()} onClick={()=>work('复核本镜提示词',async()=>{clean();apply(await action(`shots/${shotId}/prompt-confirm`,{reviewer:'Sean'}));setMessage('本镜提示词已按当前拍摄本复核');})}>复核当前提示词</button><textarea className="prompt-textarea" spellCheck="false" placeholder={promptHints} value={shotDraft.prompt} onChange={e=>setShotField('prompt',e.target.value)}/><details><summary>查看标色提示词</summary><Prompt text={shotDraft.prompt}/></details></div>}
-          {tab==='history'&&<div className="candidate-list">{[...candidates].reverse().map((c,i)=><article className={`candidate ${c.id===shot.selectedCandidateId?'chosen':''}`} key={c.id}><div className="section-head"><b>候选 {candidates.length-i}</b><Badge tone={c.status==='succeeded'?'good':c.status==='failed'?'warn':''}>{label[c.status]||c.status}</Badge></div><small className="muted">seed {c.input.shot.seed} · {new Date(c.createdAt).toLocaleString()}</small>{c.media&&<video controls src={media(c.media.hash)} preload="metadata"/>}{c.error&&<p className="error-text">{c.error}</p>}<div className="row"><button className={c.id===shot.selectedCandidateId?'primary':''} disabled={!!busy||dirty||c.status!=='succeeded'} onClick={()=>work('选定候选',async()=>{clean();apply(await action('select',{candidateId:c.id}));})}>{c.id===shot.selectedCandidateId?'✓ 已选用':'选用此镜头'}</button><button disabled={!!busy||dirty||!p.approval||!config?.enableGpu||!!config?.activeCandidateId} onClick={()=>work('重试原输入',async()=>{clean();await action('candidates',{shotId,parentId:c.id,retryExact:true});apply(await api(`/projects/${p.id}`));})}>重试原输入</button></div><details><summary>来源与分支</summary><p className="mono">候选 {c.id}<br/>父候选 {c.parentId||'首个候选'}<br/>分支 {c.branch}<br/>prompt {c.promptId||'未提交'}<br/>输入 {c.input.shotHash}<br/>模型 {c.input.model.unet}</p><Prompt text={c.input.shot.prompt}/></details></article>)}{!candidates.length&&<div className="empty small"><p>审核通过后生成第一份候选，重试会保留历史。</p></div>}</div>}
-          <div className="inspector-actions"><button disabled={!!busy||!shotDirty} onClick={saveShot}>保存镜头{shotDirty?' •':''}</button><button className="primary" disabled={!!busy||dirty||!p.approval||!config?.enableGpu||!!config?.activeCandidateId} onClick={()=>work('创建预览候选',async()=>{clean();await action('candidates',{shotId});apply(await api(`/projects/${p.id}`));setTab('history');setMessage('生成任务已创建，可以在历史中查看进度');})}>生成新候选 ↗</button><small className="muted">{!config?.enableGpu?'宿主尚未启用 GPU 预览':!p.approval?'请先批准剧本与拍摄本':'新候选保留此前所有尝试'}</small></div>
+          {tab==='history'&&<div className="candidate-list">{[...candidates].reverse().map((c,i)=><article className={`candidate ${c.id===shot.selectedCandidateId?'chosen':''}`} key={c.id}><div className="section-head"><b>候选 {candidates.length-i}</b><Badge tone={c.status==='succeeded'?'good':c.status==='failed'?'warn':''}>{label[c.status]||c.status}</Badge></div><small className="muted">seed {c.input.shot.seed} · {new Date(c.createdAt).toLocaleString()}</small>{c.media&&<video controls src={media(c.media.hash)} preload="metadata"/>}<GenerationProgress candidate={c} active={config?.activeCandidateId===c.id}/>{c.error&&<p className="error-text">{c.error}</p>}<div className="row"><button className={c.id===shot.selectedCandidateId?'primary':''} disabled={!!busy||dirty||c.status!=='succeeded'} onClick={()=>work('选定候选',async()=>{clean();apply(await action('select',{candidateId:c.id}));})}>{c.id===shot.selectedCandidateId?'✓ 已选用':'选用此镜头'}</button><button disabled={!!generationDisabledReason} title={generationDisabledReason||'生成保留历史的新候选'} onClick={()=>work('重试原输入',async()=>{clean();await action('candidates',{shotId,parentId:c.id,retryExact:true});apply(await api(`/projects/${p.id}`));setConfig(await api('/config'));})}>重试原输入</button></div><details><summary>来源与分支</summary><p className="mono">候选 {c.id}<br/>父候选 {c.parentId||'首个候选'}<br/>分支 {c.branch}<br/>prompt {c.promptId||'未提交'}<br/>输入 {c.input.shotHash}<br/>模型 {c.input.model.unet}</p><Prompt text={c.input.shot.prompt}/></details></article>)}{!candidates.length&&<div className="empty small"><p>审核通过后生成第一份候选，重试会保留历史。</p></div>}</div>}
+          <div className="inspector-actions"><button disabled={!!busy||!shotDirty} onClick={saveShot}>保存镜头{shotDirty?' •':''}</button><button className="primary" disabled={!!generationDisabledReason} title={generationDisabledReason||'生成保留历史的新候选'} onClick={()=>work('创建预览候选',async()=>{clean();await action('candidates',{shotId});apply(await api(`/projects/${p.id}`));setConfig(await api('/config'));setTab('history');setMessage('生成任务已创建，可在顶部查看实时状态与用时');})}>生成新候选 ↗</button><small className="muted" role="status">{generationDisabledReason||'可以生成新候选；此前所有尝试会保留'}</small></div>
         </>}
       </aside>
     </main>

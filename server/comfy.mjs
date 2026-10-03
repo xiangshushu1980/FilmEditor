@@ -49,12 +49,37 @@ export function graph(input,uploads,candidateId) {
 }
 const extensions={'image/png':'.png','image/jpeg':'.jpg','image/webp':'.webp','audio/wav':'.wav','audio/x-wav':'.wav','audio/flac':'.flac','audio/mpeg':'.mp3','audio/ogg':'.ogg','audio/mp4':'.m4a'};
 export class ComfyAdapter {
-  constructor(store,config) {this.store=store;this.config=config;this.active=null;}
+  constructor(store,config) {this.store=store;this.config=config;this.active=null;this.current=null;}
+  activeInfo() {
+    const c=this.current;if(!c)return null;
+    const p=this.store.get(c.projectId);
+    return {candidateId:c.id,projectId:c.projectId,projectTitle:p.title,shotId:c.shotId,shotTitle:p.shots.find(s=>s.id===c.shotId)?.title||'历史镜头',status:c.status,progress:c.progress,createdAt:c.createdAt,startedAt:c.startedAt,error:c.error};
+  }
+  progress(c,phase,detail,extra={}) {this.store.updateCandidate(c,{progress:{phase,detail,...extra,updatedAt:now()}});}
+  progressEvent(c,event) {
+    const d=event.data||{};
+    if(!c.promptId||d.prompt_id!==c.promptId||['failed','succeeded','uncertain'].includes(c.status))return;
+    if(event.type==='executing') {
+      const type=c.workflow?.[d.node]?.class_type;
+      const names={UNETLoader:'加载视频模型',CLIPLoader:'加载文本与视觉模型',VAELoader:'加载编解码模型',MiniMaxH3ReferenceToVideo:'理解提示词与参考素材',SamplerCustomAdvanced:'视频与音频采样',VAEDecode:'解码视频帧',VAEDecodeAudio:'解码音频',CreateVideo:'封装视频与音轨',SaveVideo:'保存视频'};
+      this.progress(c,'processing',d.node?(names[type]||'处理视频生成步骤'):'等待视频输出',{node:d.node,nodeType:type});
+    }else if(event.type==='progress'&&Number.isFinite(d.value)&&Number.isFinite(d.max)&&d.max>0) {
+      this.progress(c,'processing',c.progress?.detail||'视频生成中',{node:d.node||c.progress?.node,nodeType:c.progress?.nodeType,step:Math.min(d.value,d.max),total:d.max});
+    }
+  }
+  watchProgress(c) {
+    const url=new URL(this.config.comfyUrl);url.protocol=url.protocol==='https:'?'wss:':'ws:';url.pathname='/ws';url.search=new URLSearchParams({clientId:`sean-film-${c.id}`}).toString();
+    const socket=new WebSocket(url);
+    socket.addEventListener('message',e=>{if(typeof e.data!=='string')return;try{this.progressEvent(c,JSON.parse(e.data));}catch{}});
+    socket.addEventListener('error',()=>this.store.event(c.projectId,'progress-unavailable',{candidateId:c.id,message:'实时步骤暂不可用，继续轮询生成结果'}));
+    socket.addEventListener('close',()=>{if(['running','recovering'].includes(c.status))this.progress(c,'processing','实时进度连接中断，继续等待生成结果');});
+    return socket;
+  }
   async json(route,body) {return (await request(this.config.comfyUrl+route,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})).json();}
   start(c) {
     if(this.active)fail('已有镜头正在生成或恢复，请等待',409);
-    this.active=c.id;
-    void this.run(c).catch(e=>this.store.updateCandidate(c,{status:'failed',error:e.message})).finally(()=>{this.active=null;});
+    this.active=c.id;this.current=c;
+    void this.run(c).catch(e=>this.store.updateCandidate(c,{status:'failed',error:e.message})).finally(()=>{this.active=null;this.current=null;});
   }
   async upload(asset,c) {
     const bytes=this.store.read(asset.localHash);if(hash(bytes)!==asset.localHash)fail('项目素材损坏',409);
@@ -77,12 +102,14 @@ export class ComfyAdapter {
     }
   }
   async run(c) {
-    const started=Date.now();let leaseId=null,timer=null,peakVramMb=0,heartbeatBusy=false;
+    const started=Date.now();let leaseId=null,timer=null,socket=null,peakVramMb=0,heartbeatBusy=false;
     try {
+      this.store.updateCandidate(c,{startedAt:now()});this.progress(c,'preparing','检查共享队列与资源');
       if(!this.config.enableGpu)fail('GPU 生成未启用',403);
       const occupancy=await cli('occupancy');this.store.event(c.projectId,'resource-occupancy',{candidateId:c.id,summary:occupancy.stdout});
       if(!c.promptId) {const q=await this.json('/queue');if(q.queue_running.length||q.queue_pending.length)fail('共享 ComfyUI 队列非空，稍后重试',409);}
       for(;;) {
+        this.progress(c,'resource','申请生成资源；恢复任务可能需等待旧租约释放');
         try {
           const lease=await cli('lease','acquire','--owner',`sean-film:${c.projectId}:${c.id}`,'--resources','gpu:0','--pid',String(process.pid),'--ttl','600000');
           leaseId=lease.stdout.match(/租约\s+([a-f0-9-]+)\s+已授予/)?.[1];
@@ -99,6 +126,7 @@ export class ComfyAdapter {
         }
       }
       this.store.updateCandidate(c,{leaseId,status:c.promptId?'recovering':'queued'});
+      try{socket=this.watchProgress(c);}catch(e){this.store.event(c.projectId,'progress-unavailable',{candidateId:c.id,message:e.message});}
       if(leaseId)timer=setInterval(async()=>{
         if(heartbeatBusy)return;heartbeatBusy=true;
         try {await cli('lease','heartbeat',leaseId,'--ttl','600000');const stats=await this.json('/system_stats');const d=stats.devices?.[0];if(d)peakVramMb=Math.max(peakVramMb,((d.vram_used??(d.vram_total-d.vram_free))||0)/1024**2);}
@@ -107,17 +135,20 @@ export class ComfyAdapter {
       },30000);
       if(!c.promptId) {
         const uploads={images:[],audio:null};
-        for(const a of c.input.images)uploads.images.push(await this.upload(a,c));
+        for(const [i,a] of c.input.images.entries()){this.progress(c,'uploading',`准备参考图片 ${i+1}/${c.input.images.length}`);uploads.images.push(await this.upload(a,c));}
+        if(c.input.audio)this.progress(c,'uploading','准备锁定音频');
         if(c.input.audio)uploads.audio=await this.upload(c.input.audio,c);
         // Lease held; check again after uploads, never change a shared model/service.
         const q=await this.json('/queue');if(q.queue_running.length||q.queue_pending.length)fail('共享队列已被其他工作占用，未提交',409);
         const workflow=graph(c.input,uploads,c.id);
         this.store.updateCandidate(c,{status:'submitting',workflow,workflowHash:hash(JSON.stringify(workflow)),uploads});
+        this.progress(c,'submitting','提交视频生成任务');
         let response;
         try {response=await this.json('/prompt',{prompt:workflow,client_id:`sean-film-${c.id}`,extra_data:{owner:'Sean',candidateId:c.id,projectId:c.projectId}});}
         catch(e){this.store.updateCandidate(c,{status:'uncertain',error:e.message});throw e;}
         if(!response.prompt_id)fail('ComfyUI 未返回 prompt ID');
         this.store.updateCandidate(c,{promptId:response.prompt_id,status:'running',submittedAt:now()});
+        this.progress(c,'processing','视频生成中；等待模型加载或实时步骤');
       }
       let failures=0;
       for(;;) {
@@ -135,10 +166,12 @@ export class ComfyAdapter {
               const out=Object.values(rec.outputs||{}).flatMap(o=>[...(o.images||[]),...(o.videos||[]),...(o.gifs||[])]).find(o=>o.filename?.endsWith('.mp4'));
               if(!out)fail('完成记录没有 MP4，保留 history',502);
               const q=new URLSearchParams({filename:out.filename,subfolder:out.subfolder||'',type:out.type||'output'});
+              this.progress(c,'archiving','下载并校验生成视频');
               const bytes=Buffer.from(await (await request(`${this.config.comfyUrl}/view?${q}`)).arrayBuffer());
               const h=this.store.bytes(bytes);
               this.store.updateCandidate(c,{status:'succeeded',media:{hash:h,mime:'video/mp4',size:bytes.length},history:rec,completedAt:now(),elapsedSec:(Date.now()-started)/1000,peakVramMb});
               await this.cleanupOutput(c,out,h);
+              this.progress(c,'complete','视频已保存，可以播放并选用');
               break;
             }
           }
@@ -152,12 +185,16 @@ export class ComfyAdapter {
       this.store.updateCandidate(c,{status:c.status==='uncertain'?'uncertain':'failed',error:e.message,elapsedSec:(Date.now()-started)/1000});
       // If submission outcome is ambiguous, keep the lease until the shared queue drains.
       if(c.status==='uncertain'||c.promptId&&c.status==='failed') {
+        this.progress(c,'queue-wait','等待共享队列结束并释放生成锁，暂不能创建新候选');
         for(;;) {try {const q=await this.json('/queue');if(!q.queue_running.length&&!q.queue_pending.length)break;}catch{}await delay(15000);}
         if(c.status==='uncertain')this.store.updateCandidate(c,{status:'failed',error:`${c.error}; 队列已排空，原提交未自动重试`});
       }
     } finally {
+      if(socket)try{socket.close();}catch{}
       if(timer)clearInterval(timer);
+      if(leaseId)this.progress(c,'releasing','释放生成资源；即将允许创建新候选');
       if(leaseId){try{await cli('observe','--resource','gpu:0','--job',c.id,'--metrics',JSON.stringify({peakVramMb,elapsedSec:(Date.now()-started)/1000}));}catch{}try{await cli('lease','release',leaseId);}catch(e){this.store.event(c.projectId,'lease-release-error',{leaseId,message:e.message});}}
+      this.progress(c,c.status==='succeeded'?'complete':'failed',c.status==='succeeded'?'视频已保存，可以播放并选用':c.error||'生成结束');
     }
   }
   async cleanupOutput(c,out,expected) {

@@ -13,6 +13,8 @@ Owner: Sean。日期：2026-10-03。Task Center：`remote-92ecb0d7-d1db-4bd5-8a3
 
 ## 续作补齐（2026-10-03）
 
+- 补齐视频生成可观测性：候选持久化 progress、startedAt，订阅专属 clientId 的 ComfyUI 步骤事件并按 promptId 过滤；顶部与候选卡显示阶段/用时/真实当前步骤，按钮显示禁用原因，完成后提示生成锁释放。资源等待与释放单独显示，不伪造整片百分比。只读核对本机 ComfyUI 事件契约；隔离事件检查和浏览器模拟进度检查通过，未启动GPU作业。确认无活跃候选后重启编辑器，保留现有GPU开关。
+
 - 候选生成报 `spawn hive-resource ENOENT`：systemd PATH 未包含用户 CLI 目录。适配器支持标准安装绝对路径与 FILM_HIVE_RESOURCE_BIN 配置，并补齐 Node 路径供 CLI shebang 使用；最小 PATH 下实际只读 occupancy 调用通过。失败候选保留且 promptId 为空，未自动重试或提交 GPU 任务。只重启编辑器，保留用户当前 GPU 开关。
 
 - 用户授权主动检测和修订后，检查实际五镜项目发现镜头 2/3/5 对白为 `zh-CN`、prompt 为 `[Chinese]`，文字逐字一致。经编辑 API 将这三镜语言统一为 Chinese，保存 shot-version 历史，项目 revision 7→10；prompt/台词正文未改，未重新请求 LLM 或 GPU。
