@@ -212,5 +212,30 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
   const warnings=[];
   if(stage==='prompt'||stage==='revision')try{validateShot(store,p,{...p.shots.find(s=>s.id===shotId),prompt:result.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId,title:p.shots.find(s=>s.id===shotId).title,message:e.message});}
   if(stage==='spatial')for(const item of result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
+  // One bounded text-only repair for the recurrent word-budget failure. Keep
+  // the original draft and failure evidence if the provider or repair fails.
+  const oversized=warnings.filter(w=>/350–500 词/.test(w.message));
+  if(oversized.length) {
+    const messages=[{role:'system',content:system},{role:'user',content:JSON.stringify(context)},{role:'assistant',content},{role:'user',content:JSON.stringify({task:'Repair only the listed prompts to 400–450 detailed_description words. Keep six sections, exact dialogue, bindings, identity, actions, duration and initial/end states. Remove redundant prose, never story content. Do not change any other proposal fields.',issues:oversized,outputSchema:stage==='spatial'?'{prompts:[{shotId:existingUUID,prompt:string}]}':stage==='revision'?'{prompt:string,changes:string[]}':'{prompt:string}'})}];
+    const attempt={kind:'word-budget-repair',issues:oversized};
+    try {
+      const rr=await request(`${llm.baseUrl.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:AbortSignal.timeout(600000),headers:{'Content-Type':'application/json',...(config.llmKey?{Authorization:`Bearer ${config.llmKey}`}:{})},body:JSON.stringify({model:llm.model,temperature:llm.temperature,messages})});
+      const rawRepair=await rr.json(),repairText=rawRepair.choices?.[0]?.message?.content;
+      Object.assign(attempt,{responseId:rawRepair.id||null,usage:rawRepair.usage||null,rawResponse:repairText||null});
+      if(typeof repairText!=='string')fail('字数修订未返回文本',502);
+      const parsed=JSON.parse(repairText.replace(/^```(?:json)?\s*|\s*```$/g,''));
+      let repaired;
+      if(stage==='spatial') {
+        const patch=z.object({prompts:z.array(z.object({shotId:z.string().uuid(),prompt:z.string().min(1).max(30000)}).strict()).min(1).max(40)}).strict().parse(parsed);
+        if(patch.prompts.length!==oversized.length||new Set(patch.prompts.map(v=>v.shotId)).size!==oversized.length||patch.prompts.some(v=>!oversized.some(w=>w.shotId===v.shotId)))fail('字数修订镜头范围错误',502);
+        repaired={...result,shots:result.shots.map(s=>({...s,prompt:patch.prompts.find(v=>v.shotId===s.id)?.prompt||s.prompt}))};
+      }else repaired={...result,prompt:schema.parse(parsed).prompt};
+      const repairedWarnings=[];
+      const items=stage==='spatial'?repaired.shots:[{id:shotId,prompt:repaired.prompt}];
+      for(const item of items)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),...(stage==='spatial'?{framing:item.framing,continuity:item.continuity}:{}),prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){repairedWarnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
+      result=repaired;warnings.splice(0,warnings.length,...repairedWarnings);attempt.adopted=true;
+    }catch(e){attempt.error=e.message;attempt.adopted=false;}
+    provenance.repairAttempts=[attempt];capture({...provenance,warnings});
+  }
   return {result,provenance:{...provenance,warnings}};
 }
