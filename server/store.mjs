@@ -112,6 +112,8 @@ export function pipelineStatus(p) {
 export function generationStatus(p) {
   ensurePipeline(p);
   const spatialStale=!!p.spatialPlan&&p.spatialPlan.sourceHash!==shotsContentHash(p);
-  return {spatialStale,anchors:p.shots.filter(s=>p.visualAnchors?.[s.id]).map(s=>{const a=visualAnchorInput(p,s).visualAnchor;return {shotId:s.id,status:a.currentSourceHash===a.sourceInputHash&&a.selectedSource===a.sourceCandidateId?'ready':'stale'};}),prompts:p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'missing':spatialStale||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':'ready'}))};
+  const anchors=p.shots.filter(s=>p.visualAnchors?.[s.id]).map(s=>{const a=visualAnchorInput(p,s).visualAnchor;return {shotId:s.id,status:a.currentSourceHash===a.sourceInputHash&&a.selectedSource===a.sourceCandidateId?'ready':'stale'};});
+  const staleAnchors=new Set(anchors.filter(a=>a.status==='stale').map(a=>a.shotId));
+  return {spatialStale,anchors,prompts:p.shots.map(s=>({shotId:s.id,status:!s.prompt.trim()?'missing':spatialStale||staleAnchors.has(s.id)||p.pipeline.promptInputs[s.id]!==promptSourceHash(p,s)?'stale':'ready'}))};
 }
 export function planningContent(p) {return {plot:p.plot,script:p.script,dialogue:p.dialogue,shots:p.shots.map(shotContent),entities:p.entities,targetDurationSec:p.settings.targetDurationSec,...(p.visualAnchors?{visualAnchors:structuredClone(p.visualAnchors)}:{}),...(p.spatialPlan?{spatialPlan:structuredClone(p.spatialPlan)}:{}),pipeline:structuredClone(p.pipeline)};}

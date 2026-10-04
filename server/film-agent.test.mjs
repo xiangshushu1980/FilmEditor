@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
-import {Store,id,now} from './store.mjs';
+import {Store,id,now,promptSourceHash,generationStatus} from './store.mjs';
 import {createFilmAgent} from './film-agent.mjs';
 const pause=()=>new Promise(r=>setTimeout(r,5));
 function fixture(program,{localInference=false}={}){const directory=mkdtempSync(join(tmpdir(),'sean-agent-test-')),store=new Store(directory);const p={owner:'Sean',id:id(),title:'test',revision:0,createdAt:now(),plot:'完整故事',script:'原稿',dialogue:'',shots:[],entities:{},settings:{llm:{model:'test'},targetDurationSec:10,render:{width:1024,height:576}},approval:null,cutStale:true};store.save(p);let videoCalls=0,workflowCalls=0;
@@ -22,3 +22,16 @@ test('cancel persists partial work without re-submission; sessions survive servi
 test('startup marks persisted running turns interrupted without calling adapters',async()=>{const f=fixture(async()=>{});try{const s=await f.service.create(f.p.id,{provider:'fixture',modelId:'model'}),rid=id();const r={id:rid,sessionId:s.id,requestId:id(),status:'running',userText:'request',text:'partial',tools:[],candidateIds:[],workflowIds:[]};f.store.db.prepare('INSERT INTO film_agent_runs VALUES(?,?,?,?)').run(rid,s.id,r.requestId,JSON.stringify(r));const again=createFilmAgent({store:f.store,root:resolve('film-editor'),runtime:{models:async()=>[]},startPlanning:()=>{throw new Error('no');},startCandidate:()=>{throw new Error('no');},assemble:()=>{}});assert.equal(again.detail(s.id).runs[0].status,'interrupted');assert.equal(again.detail(s.id).runs[0].text,'partial');}finally{f.close();}});
 
 test('local GPU assistant rejects simultaneous agent-directed video mode before a run starts',async()=>{const f=fixture(async()=>{throw new Error('should not run');},{localInference:true});try{const s=await f.service.create(f.p.id,{provider:'fixture',modelId:'model'});await assert.rejects(f.service.start(s.id,{requestId:id(),text:'生成视频',mode:'generate'}),/本机助手与视频共用GPU/);assert.equal(f.service.detail(s.id).runs.length,0);assert.equal(f.counts().videoCalls,0);}finally{f.close();}});
+
+
+test('adopting unchanged prompt bytes records the latest input version',async()=>{
+ let shotId;const f=fixture(async({invoke})=>{const c=await invoke('get_film_context'),shot=c.shots[0];const v=await invoke('propose_film_revision',{revision:c.revision,patch:{summary:'确认此提示词仍适用于当前输入',shotId,shotChanges:{prompt:shot.prompt}}});assert.equal(v.validation.valid,true);await invoke('apply_film_proposal',{revision:c.revision,proposalId:v.proposalId});});
+ try{
+  const entityId=id(),assetId=id(),snapshotId=id(),imageHash=f.store.bytes(Buffer.from('fixture image'));
+  f.store.snapshot({owner:'Sean',id:snapshotId,projectId:f.p.id,version:1,manifest:{entities:[{entityId,name:'A',assets:[{assetId,entityId,role:'main_appearance',mediaType:'image',mime:'image/png'}]}],relations:[]},assets:{[assetId]:{hash:imageHash}}});
+  const prompt=`subject_definitions:\n<Subject 1> is A from <Picture 1>.\nsummary:\n[reference generation] A sits.\nretention_analysis:\n<Subject 1>: fully_preserved - identity.\ndetailed_description:\nA realistic indoor scene. [Shot 1] ${'Room table light. '.repeat(120)}\noverall_soundscape:\nRoom tone.\nnon_diegetic_music:\nN/A`;shotId=id();
+  const first=f.store.edit(f.p.id,f.store.get(f.p.id).revision,p=>{p.entities={[entityId]:{name:'A',snapshotId,sourceRevision:'test'}};p.shots=[{id:shotId,title:'test',durationSec:4,entityIds:[entityId],imageAssetIds:[assetId],action:'sit',framing:'medium',camera:'static',continuity:'same room',dialogue:[],prompt,seed:1,nativeAudioAssetId:null,verifiedAudioTranscript:'',stale:false,selectedCandidateId:null}];p.pipeline.promptInputs[shotId]=promptSourceHash(p,p.shots[0]);});
+  f.store.edit(f.p.id,first.revision,p=>{p.shots[0].seed=2;});assert.equal(generationStatus(f.store.get(f.p.id)).prompts[0].status,'stale');
+  const {s}=await begin(f);const result=await finish(f.service,s.id);assert.equal(result.runs[0].status,'succeeded');const next=f.store.get(f.p.id);assert.equal(next.shots[0].prompt,prompt);assert.equal(next.shots[0].seed,2);assert.equal(generationStatus(next).prompts[0].status,'ready');assert.ok(result.proposals[0].appliedAt);
+ }finally{f.close();}
+});
