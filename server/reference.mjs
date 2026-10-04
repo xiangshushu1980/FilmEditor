@@ -76,7 +76,7 @@ export function bindings(store,p,shot,{allowHistoricalAnchor=false}={}) {
   if(images.length>12)fail('含衔接参考帧最多使用12张图片');
   const audio=shot.nativeAudioAssetId?assets.find(a=>a.assetId===shot.nativeAudioAssetId&&a.mediaType==='audio'):null;
   if(shot.nativeAudioAssetId&&!audio)fail('锁定声音不存在于当前实体快照');
-  const relations=store.snapshots(p.id).filter(s=>Object.values(p.entities).some(e=>e.snapshotId===s.id)).flatMap(s=>s.manifest.relations||[]);
+  const relations=store.snapshots(p.id).filter(s=>Object.values(p.entities).some(e=>e.snapshotId===s.id)).flatMap(s=>(s.manifest.relations||[]).filter(r=>p.entities[r.sourceEntityId]?.snapshotId===s.id));
   return {entities,images,audio,voiceReferences:voiceReferences(p,all,relations,shot)};
 }
 export const imageBindingContext=images=>images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId,role:a.role,...(a.provenance?{provenance:a.provenance}:{})}));

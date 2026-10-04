@@ -46,3 +46,18 @@ test('fixed LLM receives real voice bindings and removes the legacy prohibition'
   const {p,shot,store}=fixture();let input;const server=createServer(async(req,res)=>{let raw='';for await(const part of req)raw+=part;input=JSON.parse(raw);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify({prompt:shot.prompt})}}]}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   try{p.settings.llm.baseUrl=`http://127.0.0.1:${server.address().port}`;prepareCurrentInputs(store,p,'prompt',shot.id);const result=await generateStage(store,{},p,'prompt',shot.id,()=>{});assert.deepEqual(result.provenance.warnings,[]);const context=JSON.parse(input.messages[1].content);assert.equal(context.voiceBindings[0].speakerId,'S1');assert.equal(context.voiceBindings[0].assetId,bindings(store,p,shot).voiceReferences[0].assetId);assert.ok(input.messages[0].content.includes('VOICE BINDINGS'));assert.ok(!input.messages[0].content.includes('Otherwise no Audio labels.'));assert.ok(!input.messages[0].content.includes('No Audio or Video labels:'));}finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
 });
+
+test('invalid ancestry cannot silently select a voice or depend on relation order',()=>{
+  const {p,shot,entities,relations}=fixture();
+  assert.throws(()=>voiceReferences(p,entities,[...relations,{sourceEntityId:entities[0].entityId,targetEntityId:entities[2].entityId,type:'derived_from'}],shot),/循环/);
+  assert.throws(()=>voiceReferences(p,entities,[...relations,{sourceEntityId:entities[2].entityId,targetEntityId:entities[1].entityId,type:'derived_from'}],{...shot,dialogue:[{speaker:entities[2].entityId,text:'yes'}]}),/多个派生来源/);
+});
+
+test('voice ancestry ignores old relations carried by another current entity snapshot',()=>{
+  const {p,shot,store,entities,snapshot}=fixture();
+  const old=structuredClone(snapshot);old.id=id();old.manifest.relations=[{sourceEntityId:entities[2].entityId,targetEntityId:entities[1].entityId,type:'derived_from'}];
+  p.entities[entities[1].entityId].snapshotId=old.id;
+  const currentStore={snapshots:()=>[snapshot,old]};
+  const refs=bindings(currentStore,p,{...shot,entityIds:[entities[2].entityId],imageAssetIds:[entities[2].assets[0].assetId],dialogue:[{speaker:entities[2].entityId,text:'yes'}]}).voiceReferences;
+  assert.equal(refs[0].sourceEntityId,entities[0].entityId);assert.equal(refs[0].sourceSnapshotId,snapshot.id);
+});
