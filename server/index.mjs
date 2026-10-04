@@ -84,7 +84,7 @@ app.post('/api/projects/:id/shots/:shotId/visual-anchor',async(req,res)=>{const 
 app.delete('/api/projects/:id/shots/:shotId/visual-anchor',(req,res)=>{const b=z.object({revision:rev}).strict().parse(req.body),projectId=getId(req);removeVisualAnchor(store,projectId,b.revision,uuid.parse(req.params.shotId));res.json(store.view(projectId));});
 app.post('/api/projects/:id/plan',(_req,res)=>res.status(409).json({error:'已改为分阶段生成：请先生成剧本，再使用当前内容生成拍摄本与逐镜提示词。'}));
 app.get('/api/projects/:id/planning-versions/:versionId',(req,res)=>{
-  const version=store.planningVersions(getId(req)).find(v=>v.id===uuid.parse(req.params.versionId));if(!version)fail('版本不存在',404);res.json(version);
+  const version=store.planningVersions(getId(req)).find(v=>v.id===uuid.parse(req.params.versionId));if(!version)fail('版本不存在',404);if(!version.content)fail('此版本仅保留目录信息，历史正文未恢复；请查看当前拍摄本。',410);res.json(version);
 });
 app.get('/api/projects/:id/jobs/:jobId',(req,res)=>{
   const job=store.jobs(getId(req)).find(j=>j.id===uuid.parse(req.params.jobId));if(!job)fail('任务不存在',404);res.json(job);
@@ -269,7 +269,7 @@ app.get('/api/projects/:id/export',(req,res)=>{const projectId=getId(req);res.at
 app.get('/api/projects/:id/media/:hash',(req,res)=>{
   const projectId=getId(req),h=req.params.hash,view=store.view(projectId);
   const asset=view.snapshots.flatMap(s=>Object.values(s.assets)).find(a=>a.hash===h);
-  const anchor=Object.values(view.visualAnchors||{}).find(a=>a.localHash===h)||view.candidates.flatMap(c=>c.input.images||[]).find(a=>a.role==='continuity_frame'&&a.localHash===h)||store.planningVersions(projectId).flatMap(v=>Object.values(v.content.visualAnchors||{})).find(a=>a.localHash===h);
+  const anchor=Object.values(view.visualAnchors||{}).find(a=>a.localHash===h)||view.candidates.flatMap(c=>c.input.images||[]).find(a=>a.role==='continuity_frame'&&a.localHash===h)||store.planningVersions(projectId).flatMap(v=>Object.values(v.content?.visualAnchors||{})).find(a=>a.localHash===h);
   const media=asset||anchor||view.candidates.find(c=>c.media?.hash===h)?.media||view.cuts.find(c=>c.media?.hash===h)?.media;
   if(!media)fail('素材不属于此项目',404);
   const content=store.read(h);res.type(media.mime);res.set({'Accept-Ranges':'bytes','ETag':`"${h}"`,'Cache-Control':'private, max-age=31536000, immutable'});
