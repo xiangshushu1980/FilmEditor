@@ -34,7 +34,7 @@ export function graph(input,uploads,candidateId) {
     '7':node('KSamplerSelect',{sampler_name:'euler'}),
     '8':node('BasicScheduler',{model:['23',0],scheduler:'simple',steps:8,denoise:1}),
     '9':node('BasicGuider',{model:['23',0],conditioning:['6',0]}),
-    '10':node('RandomNoise',{noise_seed:shot.seed}),
+    '10':node('RandomNoise',{noise_seed:input.samplingSeed??shot.seed}),
     '11':node('SamplerCustomAdvanced',{noise:['10',0],guider:['9',0],sampler:['7',0],sigmas:['18',1],latent_image:['6',1]}),
     '12':node('VAEDecode',{samples:['11',0],vae:['3',0]}),
     '13':node('VAEDecodeAudio',{samples:['11',0],vae:['4',0]}),

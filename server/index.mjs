@@ -10,6 +10,7 @@ import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
 import { mountFilmAgent } from './film-agent.mjs';
 import { spatialSchema, applySpatialPlan, checkSpatialShots } from './spatial.mjs';
+import {candidateSamplingInput} from './candidate-input.mjs';
 import {setVisualAnchor,removeVisualAnchor} from './visual-anchors.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const url=z.string().url().refine(s=>{const u=new URL(s);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash;},'需要无认证信息的 HTTP(S) 接口 URL');
@@ -240,7 +241,8 @@ function startCandidate(projectId,b) {
     const {stale,selectedCandidateId,...spec}=shot;
     const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,voiceReferences:refs.voiceReferences,approval:p.approval,model,...(p.spatialPlan?{spatialPlan:p.spatialPlan}:{}),adapterVersion:'sean-ref2va@3'};
     if(b.retryExact&&(!parent||parent.input.shotHash!==input.shotHash))fail('原输入已失效，请按当前内容新建候选');
-    c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:b.retryExact?parent.input:input};store.candidate(c);
+    const sampled=candidateSamplingInput(input,candidates,{retryExact:b.retryExact,parent});
+    c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':sampled.seedPolicy==='variation'?'variation':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:sampled};store.candidate(c);
     store.event(projectId,'video-generation-input',{shotId:b.shotId,inputRevision:b.revision,resultRevision:b.revision+1,mode:b.useCurrent?'direct-generation':'legacy-approved',shotHash:input.shotHash});
   },'pipeline-video-generation-input');
   comfy.start(c);return c;
