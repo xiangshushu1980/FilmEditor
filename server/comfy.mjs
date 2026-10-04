@@ -21,6 +21,8 @@ const cli=resourceCli;
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export const model={unet:'minimax_h3_ref2va_pruned_int8_convrot.safetensors',clip:'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',videoVae:'minimax_h3_video_vae_fp16.safetensors',audioVae:'minimax_h3_audio_vae_fp32.safetensors',pdd:'minimax_h3_ref2va_pdd_acc_8step_comfyui.safetensors'};
 export function graph(input,uploads,candidateId) {
+  if(uploads.audio&&(uploads.voices||[]).length)fail('整段音频锁定不能同时混入角色音色参考');
+  if((uploads.voices||[]).length>3)fail('H3 最多使用3个独立音色参考');
   const {shot,render}=input, node=(class_type,inputs)=>({class_type,inputs});
   const wf={
     '1':node('UNETLoader',{unet_name:model.unet,weight_dtype:'default'}),
@@ -40,6 +42,7 @@ export function graph(input,uploads,candidateId) {
     '15':node('SaveVideo',{video:['14',0],filename_prefix:`video/sean_film_editor/${candidateId}/clip`,format:'mp4',codec:'auto'}),
   };
   uploads.images.forEach((a,i)=>{const n=String(100+i);wf[n]=node('LoadImage',{image:a});wf['6'].inputs[`ref_images.ref_image_${i}`]=[n,0];});
+  (uploads.voices||[]).forEach((a,i)=>{const n=String(200+i);wf[n]=node('LoadAudio',{audio:a});wf['6'].inputs[`ref_audios.ref_audio_${i}`]=[n,0];});
   if(uploads.audio) {
     wf['16']=node('LoadAudio',{audio:uploads.audio});
     wf['17']=node('MiniMaxH3NativeAudioLock',{model:['23',0],av_latent:['6',1],audio_vae:['4',0],audio:['16',0]});
@@ -134,10 +137,11 @@ export class ComfyAdapter {
         finally {heartbeatBusy=false;}
       },30000);
       if(!c.promptId) {
-        const uploads={images:[],audio:null};
+        const uploads={images:[],audio:null,voices:[]};
         for(const [i,a] of c.input.images.entries()){this.progress(c,'uploading',`准备参考图片 ${i+1}/${c.input.images.length}`);uploads.images.push(await this.upload(a,c));}
         if(c.input.audio)this.progress(c,'uploading','准备锁定音频');
         if(c.input.audio)uploads.audio=await this.upload(c.input.audio,c);
+        for(const a of c.input.voiceReferences||[]){this.progress(c,'uploading',`准备音色参考 ${a.audioIndex}`);uploads.voices.push(await this.upload(a,c));}
         // Lease held; check again after uploads, never change a shared model/service.
         const q=await this.json('/queue');if(q.queue_running.length||q.queue_pending.length)fail('共享队列已被其他工作占用，未提交',409);
         const workflow=graph(c.input,uploads,c.id);

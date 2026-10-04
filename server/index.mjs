@@ -238,7 +238,7 @@ function startCandidate(projectId,b) {
     const parent=b.parentId?candidates.find(c=>c.id===b.parentId):candidates.at(-1);
     if(b.parentId&&!parent)fail('父候选不存在');
     const {stale,selectedCandidateId,...spec}=shot;
-    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,approval:p.approval,model,...(p.spatialPlan?{spatialPlan:p.spatialPlan}:{}),adapterVersion:'sean-ref2va@2'};
+    const input={owner:'Sean',shot:spec,shotHash:shotHash(p,shot),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,entities:refs.entities,snapshots:Object.fromEntries(shot.entityIds.map(e=>[e,p.entities[e]])),images:refs.images,audio:refs.audio,voiceReferences:refs.voiceReferences,approval:p.approval,model,...(p.spatialPlan?{spatialPlan:p.spatialPlan}:{}),adapterVersion:'sean-ref2va@3'};
     if(b.retryExact&&(!parent||parent.input.shotHash!==input.shotHash))fail('原输入已失效，请按当前内容新建候选');
     c={id:id(),projectId,shotId:shot.id,parentId:parent?.id||null,branch:b.retryExact?'retry':'edit-and-rerun',owner:'Sean',createdAt:now(),status:'queued',input:b.retryExact?parent.input:input};store.candidate(c);
     store.event(projectId,'video-generation-input',{shotId:b.shotId,inputRevision:b.revision,resultRevision:b.revision+1,mode:b.useCurrent?'direct-generation':'legacy-approved',shotHash:input.shotHash});

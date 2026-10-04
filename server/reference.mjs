@@ -1,6 +1,7 @@
 // Owner: Sean — public Reference Export v1 only; no internal files or DB imports.
 import { id, now, fail, fingerprint, canonical, hash, invalidate } from './store.mjs';
 import {anchorAsset} from './visual-anchors.mjs';
+import {voiceReferences} from './voice-references.mjs';
 export async function request(url, options={}) {
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(60000),...options});
   if(!response.ok)fail(`上游请求失败 (${response.status}): ${(await response.text()).slice(0,1500)}`,502);
@@ -66,7 +67,7 @@ export function inventory(store,p) {
   });
 }
 export function bindings(store,p,shot,{allowHistoricalAnchor=false}={}) {
-  const entities=inventory(store,p).filter(e=>shot.entityIds.includes(e.entityId));
+  const all=inventory(store,p),entities=all.filter(e=>shot.entityIds.includes(e.entityId));
   const assets=entities.flatMap(e=>e.assets);
   const images=shot.imageAssetIds.map(assetId=>{
     const a=assets.find(a=>a.assetId===assetId&&a.mediaType==='image');if(!a)fail('镜头引用图不属于当前快照中的已选实体');return a;
@@ -75,6 +76,7 @@ export function bindings(store,p,shot,{allowHistoricalAnchor=false}={}) {
   if(images.length>12)fail('含衔接参考帧最多使用12张图片');
   const audio=shot.nativeAudioAssetId?assets.find(a=>a.assetId===shot.nativeAudioAssetId&&a.mediaType==='audio'):null;
   if(shot.nativeAudioAssetId&&!audio)fail('锁定声音不存在于当前实体快照');
-  return {entities,images,audio};
+  const relations=store.snapshots(p.id).filter(s=>Object.values(p.entities).some(e=>e.snapshotId===s.id)).flatMap(s=>s.manifest.relations||[]);
+  return {entities,images,audio,voiceReferences:voiceReferences(p,all,relations,shot)};
 }
 export const imageBindingContext=images=>images.map((a,i)=>({picture:i+1,assetId:a.assetId,entityId:a.entityId,role:a.role,...(a.provenance?{provenance:a.provenance}:{})}));

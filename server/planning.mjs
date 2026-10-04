@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { fail, approvalHash, id, now, ensurePipeline, pipelineStatus, scriptSourceHash, scriptContentHash, shotsSourceHash, shotsContentHash, shotPlan, promptSourceHash } from './store.mjs';
 import { inventory, bindings, request, imageBindingContext } from './reference.mjs';
+import {voiceBindingContext} from './voice-references.mjs';
 import { spatialSchema, checkSpatialShots, currentSpatialPlan, spatialShot, exportedFacts, spatialInstructions } from './spatial.mjs';
 const uuid=z.string().uuid();
 export const dialogueSchema=z.object({speaker:uuid,text:z.string().min(1).max(4000),language:z.string().min(1).max(40)}).strict();
@@ -32,7 +33,7 @@ export function validateShot(store,p,shot,{allowHistoricalAnchor=false}={}) {
   const fields=Object.fromEntries(matches.map((m,i)=>[m[1],shot.prompt.slice(m.index+m[0].length,matches[i+1]?.index).trim()]));
   if(Object.values(fields).some(v=>!v))fail('提示词六段不能为空');
   const tasks=fields.summary.match(/^\[([^\]]+)\]/)?.[1].split(' + ')||[];
-  if(!tasks.includes('reference generation')||tasks.some(t=>!['reference generation','keyframe completion','audio reuse'].includes(t))||new Set(tasks).size!==tasks.length)fail('summary 必须包含正确的 reference generation 任务前缀');
+  if(!tasks.includes('reference generation')||tasks.some(t=>!['reference generation','keyframe completion','audio reuse','audio reference'].includes(t))||new Set(tasks).size!==tasks.length)fail('summary 必须包含正确的 reference generation 任务前缀');
   const anchor=b.images.find(a=>a.role==='continuity_frame');
   if(anchor){const n=b.images.length;if(!tasks.includes('keyframe completion')||!new RegExp(`<Picture ${n}>[^\\n]*(?:first frame|opening frame|initial frame|0\\.00)`, 'i').test(fields.subject_definitions)||!fields.detailed_description.includes(`<Picture ${n}>`))fail(`衔接参考帧须定义 Picture ${n} 为开场帧，并在 summary 声明 keyframe completion、正文说明开场衔接`);}
   else if(tasks.includes('keyframe completion'))fail('当前没有衔接参考帧，不能声明 keyframe completion');
@@ -45,7 +46,7 @@ export function validateShot(store,p,shot,{allowHistoricalAnchor=false}={}) {
   const subjects=new Set(definitions.map(m=>m[1]));
   for(const match of shot.prompt.matchAll(/<(Subject|Picture|Audio|Video) (\d+)>/g)) {
     const n=Number(match[2]);
-    if(match[1]==='Picture'&&(n<1||n>b.images.length)||match[1]==='Audio'&&(!b.audio||n!==1)||match[1]==='Video'||match[1]==='Subject'&&!subjects.has(match[2]))fail(`未解析引用 ${match[0]}`);
+    if(match[1]==='Picture'&&(n<1||n>b.images.length)||match[1]==='Audio'&&(n<1||n>(b.audio?1:b.voiceReferences.length))||match[1]==='Video'||match[1]==='Subject'&&!subjects.has(match[2]))fail(`未解析引用 ${match[0]}`);
   }
   for(let i=1;i<=b.images.length;i++)if(!fields.subject_definitions.includes(`<Picture ${i}>`))fail(`subject_definitions 缺少 Picture ${i} 绑定`);
   for(const subject of subjects) {
@@ -64,6 +65,18 @@ export function validateShot(store,p,shot,{allowHistoricalAnchor=false}={}) {
     if(!tasks.includes('audio reuse')||!/<Audio 1>/.test(fields.subject_definitions)||!/<Audio 1>:\s*fully_copy/.test(fields.retention_analysis))fail('NativeAudioLock 必须明确声明 audio reuse / fully_copy');
     if(Math.abs(b.audio.durationSec-shot.durationSec)>0.2)fail('锁定音频时，镜头时长须贴合源音频（±0.2 秒）');
   }
+  if(b.voiceReferences.length) {
+    if(!tasks.includes('audio reference')||tasks.includes('audio reuse'))fail('角色音色参考须声明 audio reference，不能声明整段 audio reuse');
+    for(const a of b.voiceReferences) {
+      const definition=fields.subject_definitions.match(new RegExp(`^<Audio ${a.audioIndex}>[^\\n]*`, 'm'))?.[0];
+      const target=definition?.match(/<Subject (\d+)>\s*\((S\d+)\)/);
+      const pictures=b.images.flatMap((v,i)=>v.entityId===a.speakerEntityId?[i+1]:[]);
+      const subject=target&&definitions.find(v=>v[1]===target[1]);
+      if(!target||target[2]!==a.speakerId||!pictures.some(i=>subject?.[2].includes(`<Picture ${i}>`)))fail(`Audio ${a.audioIndex} 须绑定说话角色对应的 Subject 与 (${a.speakerId})`);
+      if(!new RegExp(`^<Audio ${a.audioIndex}>(?:[^\\n:]*):\\s*(?:reference|weak_reference)\\b`,'m').test(fields.retention_analysis))fail(`Audio ${a.audioIndex} 须声明音色 reference，不复制参考台词`);
+      if(!fields.detailed_description.includes(`<Subject ${target[1]}> (${a.speakerId})`))fail(`音色 ${a.audioIndex} 的说话角色标签与正文不一致`);
+    }
+  }else if(tasks.includes('audio reference'))fail('当前没有角色音色参考');
   let prior=0;
   for(const m of fields.detailed_description.matchAll(/\[Shot (\d+)\]\s+At (\d{2}):(\d{2})\.(\d{3})/g)) {
     const time=Number(m[2])*60+Number(m[3])+Number(m[4])/1000;
@@ -175,6 +188,13 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
   if(p.visualAnchors&&['spatial','prompt','revision'].includes(stage))instructions+='\nCONTINUITY FRAMES: Each imageBindings entry with role continuity_frame is an actual frozen frame from the preceding clip, NOT an entity image. Its Picture number comes after all entity references. Define that <Picture N> on its own line as the first frame / edited opening frame of [Shot 1], add keyframe completion to the summary task prefix (retain reference generation and audio reuse only when applicable), add its retention_analysis entry, and explicitly describe starting from <Picture N> in detailed_description. Preserve the room, table geometry, camera side and relevant actor positions of that frame; apply the approved initial state and actions. Reference-video errors are not story truth: explain precisely any approved state corrections to the edited opening frame rather than copying duplicate props. Entity reference identity and costume roles remain distinct. Do not invent a Subject for the frame itself or import additional people from it. Do not use the generic scene image as a competing camera/composition anchor. This text client only has metadata, not pixels; use supplied observations/notes without claiming to have seen the frame.';
   if(stage!=='script'&&stage!=='spatial')instructions+='\n'+spatialInstructions;
   if(directorNotes) {context.directorNotes=directorNotes;instructions+='\nUse directorNotes as additional user direction. Preserve authoritative story/actions/dialogue/cast/references/duration for prompt and spatial stages. If direction conflicts, explain in spatial questions; do not silently change facts.';}
+  if(['spatial','prompt','revision'].includes(stage)) {
+    if(stage==='spatial')context.shotOrder.forEach(s=>{s.voiceBindings=voiceBindingContext(bindings(store,p,p.shots.find(v=>v.id===s.id),{allowHistoricalAnchor:true}).voiceReferences);});
+    else context.voiceBindings=voiceBindingContext(bindings(store,p,p.shots.find(v=>v.id===shotId),{allowHistoricalAnchor:true}).voiceReferences);
+    instructions=instructions.replace('No Audio or Video labels: voice assets here are listening context, NOT an external locked soundtrack.','No Video labels. Voice assets are independent timbre references when voiceBindings supplies them.').replaceAll('otherwise no Audio labels.','otherwise use the supplied voiceBindings.').replaceAll('Otherwise no Audio labels.','Otherwise use the supplied voiceBindings.');
+    instructions+='\nVOICE BINDINGS: Each supplied voiceBindings audio index is a standalone reference asset, not the story soundtrack. Define each <Audio N> on its own line as the voice-timbre reference for the corresponding visible <Subject N> (Sx), using the supplied speakerId and speakerEntityId. summary adds audio reference, retention_analysis uses reference for each Audio (without speaker IDs). Generate ONLY the approved story dialogue, never copy sample words. Derived appearances of one identity retain its global speaker ID and base voice. If nativeAudioAssetId is set, voiceBindings is empty: preserve the existing audio reuse/fully_copy lock contract instead. No audio labels when neither lock nor voiceBindings exists.';
+  }
+  instructions+='\nRendered video prompts must not contain UUIDs, asset hashes or metadata field names; express bindings using Subject/Picture/Audio labels and speaker IDs only.';
   const system=base+instructions;
   const response=await request(`${llm.baseUrl.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:AbortSignal.timeout(600000),headers:{'Content-Type':'application/json',...(config.llmKey?{Authorization:`Bearer ${config.llmKey}`}:{})},body:JSON.stringify({model:llm.model,temperature:llm.temperature,messages:[{role:'system',content:system},{role:'user',content:JSON.stringify(context)}]})});
   const raw=await response.json(),content=raw.choices?.[0]?.message?.content;
