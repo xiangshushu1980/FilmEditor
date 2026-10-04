@@ -30,6 +30,10 @@ SQLite revision 与事务保护并发写回；不可变 `planning_versions` 保�
 
 后续真实 Agent 调用 shots 工作流将七镜重排为六镜（11→12，6／4／4／5／4／7 秒），完整剧本及五句对白原文与顺序保持；请求已携带新增服装规则。生成结果曾留下绕桌取物的未定路径，再经六份逐镜提案统一为靠桌中线的可触及交互点、A 保持近侧取衣转圈（12→18）；只有 action／continuity 修改，其他镜头字段不变。相对调度明确作为本片要求，不冒充实体已登记尺寸。证据：[节奏重排](../experiments/sean_film_agent_20261004/sean_stage_timing_agent_replan.json)、[取物路径修订](../experiments/sean_film_agent_20261004/sean_stage_reach_agent_repair.json)。六镜尚未生成视频；30 秒仍是编排目标，不是实拍可行性结论。
 
+六镜空间与提示词随后经真实 spatial 工作流及 Agent 提案审核采用（19→20；第6镜先补 A 原始身份图），初稿音色 retention 与来源问题经修订解决。根级内容复核又修订首镜“B 请求放刀→A 放刀落座”的先后、去掉自行加入的动漫风格，并在每镜正文重复主桌与同一书墙、固定近远侧及机位关系（20→23）。六镜正文分别为 492／452／438／465／461／481 词；六镜均 ready，空间来源当前。对白、镜ID、时长、引用及种子不变；首镜外其他动作不变。证据：[原空间流程](../experiments/sean_film_agent_20261004/sean_six_spatial_agent_result.json)、[因果与空间修订](../experiments/sean_film_agent_20261004/sean_six_causal_spatial_agent_repair.json)。正文可生成不等于视频完成，首镜六秒能否容纳完整动作与对白须实测。
+
 真实回归还发现 Agent 对 shots 的自动写回重复调用采用工具，被 revision 校验拒绝。现 get_workflow_result 明确返回 application.mode/status/requiresAdoption/nextAction：script／shots／prompt 成功自动写回后应回读最新上下文，spatial／revision 成功才进入审核采用；失败和运行中不会被标为已采用。相关测试覆盖自动结果、待采用/已采用提案、运行中、失败、冲突与中断，不改变实际项目写回策略。
+
+Subject 定义解析曾将句中“与 <Subject 2> 是同一人”的引用当成新条目，误拒绝自身已有 Picture 绑定的定义。解析现以行首条目及兼容旧稿的句子边界区分定义与句中引用；包裹多行仍可用，未定义引用或缺自身图片仍拒绝。25 项相关测试通过；两份实际被拒绝的六镜提案未经改字即通过新解析，证据：[真实草稿回归](../experiments/sean_film_agent_20261004/sean_subject_definition_real_regression.json)。
 
 另一隔离项目 `70338d49-e494-433f-a753-738fbd3dafc9` 已实际生成并选用五镜，合成成片通过完整音视频解码检查；抽帧检查了同一阅读桌、人物方位、刀与衣服的交接及末镜一次转圈。当前成片实际为 38.605 秒，不能据此宣称达到 30 秒目标；音色区分、口型及完整观感仍待验收。证据：[成片输入与探测](../experiments/sean_film_agent_20261004/sean_coherence_current_cut.json)、[检查记录](../experiments/sean_film_agent_20261004/sean_coherence_current_cut_qc.json)。用户原项目未被测试结果覆盖。固定响应的恢复测试与真实生成的质量证据分别记录，不以参数正确替代听感或连续性验收。
