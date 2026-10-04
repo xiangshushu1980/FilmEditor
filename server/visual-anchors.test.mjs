@@ -24,6 +24,27 @@ function fixture(){
   const candidate=(s,projectId=p.id)=>{const c={owner:'Sean',id:id(),projectId,shotId:s.id,status:'succeeded',input:{shot:s,shotHash:shotHash(store.get(p.id),s)},media:{hash:videoHash,mime:'video/mp4',size:readFileSync(video).length}};store.candidate(c);return c;};
   const c1=candidate(p.shots[0]),c2=candidate(p.shots[1]);return {dir,store,p:store.get(p.id),c1,c2,candidate,close(){store.db.close();rmSync(dir,{recursive:true,force:true});}};
 }
+test('equivalent space revalidation preserves rendered prefix and still rejects unreviewed source edits',async()=>{
+ const f=fixture();try{
+  const {store,p,c2}=f;await setVisualAnchor(store,p.id,p.revision,p.shots[2].id,c2.id);
+  const before=store.get(p.id);before.shots[1].selectedCandidateId=c2.id;
+  const prefix=before.shots.slice(0,2).map(s=>shotHash(before,s));
+  before.shots[2].continuity='one simple fold implements gathering';
+  assert.equal(generationStatus(before).spatialStale,true);
+  const result={scenePlan:before.spatialPlan.scenePlan,questions:[],shots:before.shots.map(s=>({...before.spatialPlan.shots.find(v=>v.id===s.id),framing:s.framing,continuity:s.continuity,prompt:s.prompt,changes:[]}))};
+  // This test isolates adoption lineage; prompt syntax has separate real-validator coverage.
+  applySpatialPlan(store,before,result,()=>{});
+  assert.ok(currentSpatialPlan(before));assert.deepEqual(before.shots.slice(0,2).map(s=>shotHash(before,s)),prefix);
+  assert.equal(before.shots[1].selectedCandidateId,c2.id);
+  assert.equal(generationStatus(before).anchors[0].status,'ready');
+  assert.equal(generationStatus(before).prompts[2].status,'ready');
+  // A subsequent equivalent adoption must retain the original render provenance.
+  applySpatialPlan(store,before,result,()=>{});assert.deepEqual(before.shots.slice(0,2).map(s=>shotHash(before,s)),prefix);
+  result.scenePlan='changed actual room';applySpatialPlan(store,before,result,()=>{});
+  assert.notEqual(shotHash(before,before.shots[1]),prefix[1]);
+  assert.equal(before.shots[1].selectedCandidateId,null);assert.equal(generationStatus(before).anchors[0].status,'stale');
+ }finally{f.close();}
+});
 test('extracts a frozen actual tail frame, appends after entity images and only invalidates target',async()=>{
   const f=fixture();try{const {store,p,c2}=f,old=shotHash(p,p.shots[0]),spatial=p.spatialPlan.sourceHash;const result=await setVisualAnchor(store,p.id,p.revision,p.shots[2].id,c2.id),next=store.get(p.id),a=result.anchor;
     assert.equal(result.revision,p.revision+1);assert.equal(shotHash(next,next.shots[0]),old);assert.equal(next.spatialPlan.sourceHash,spatial);assert.equal(shotsContentHash(next),spatial);

@@ -74,7 +74,7 @@ export function invalidate(p,entityIds=null) {
   for(const s of p.shots) if(!entityIds||s.entityIds.some(e=>entityIds.includes(e))) {s.stale=true;s.selectedCandidateId=null;}
 }
 export function shotInput(p,s) {
-  return {shot:s,...voicePolicy(p,s),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,...(p.spatialPlan?{spatial:{scenePlan:p.spatialPlan.scenePlan,sourceHash:p.spatialPlan.sourceHash,blocking:p.spatialPlan.shots.find(v=>v.id===s.id)}}:{}),...visualAnchorInput(p,s),snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
+  return {shot:s,...voicePolicy(p,s),plot:p.plot,script:p.script,dialogue:p.dialogue,render:p.settings.render,...(p.spatialPlan?{spatial:{scenePlan:p.spatialPlan.scenePlan,sourceHash:p.spatialPlan.renderSourceHash||p.spatialPlan.sourceHash,blocking:p.spatialPlan.shots.find(v=>v.id===s.id)}}:{}),...visualAnchorInput(p,s),snapshots:Object.fromEntries(s.entityIds.map(e=>[e,p.entities[e]]))};
 }
 export function visualAnchorInput(p,s){
   const anchor=p.visualAnchors?.[s.id];if(!anchor)return {};
@@ -93,7 +93,7 @@ export const scriptSourceHash=p=>fingerprint({plot:p.plot,entities:p.entities,ta
 export const scriptContentHash=p=>fingerprint({source:scriptSourceHash(p),script:p.script,dialogue:p.dialogue});
 export const shotsSourceHash=p=>scriptContentHash(p);
 export const shotsContentHash=p=>fingerprint({source:shotsSourceHash(p),shots:p.shots.map(shotPlan)});
-export const promptSourceHash=(p,s)=>fingerprint({source:shotsSourceHash(p),shot:shotPlan(s),...voicePolicy(p,s),...(p.spatialPlan?{spatial:p.spatialPlan}:{}),...visualAnchorInput(p,s)});
+export const promptSourceHash=(p,s)=>{const {renderSourceHash,...spatial}=p.spatialPlan||{};if(renderSourceHash)spatial.sourceHash=renderSourceHash;return fingerprint({source:shotsSourceHash(p),shot:shotPlan(s),...voicePolicy(p,s),...(p.spatialPlan?{spatial}:{}),...visualAnchorInput(p,s)});};
 export function ensurePipeline(p) {
   if(p.pipeline)return;
   const approved=p.approval?.hash===approvalHash(p);

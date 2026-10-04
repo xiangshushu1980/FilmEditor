@@ -1,6 +1,6 @@
 // Owner: Sean — shared scene facts and editable cross-shot blocking proposals.
 import { z } from 'zod';
-import { fail, shotsContentHash, shotsSourceHash, promptSourceHash, invalidate } from './store.mjs';
+import { fail, shotsContentHash, shotsSourceHash, promptSourceHash, shotHash, fingerprint } from './store.mjs';
 export const spatialSchema=z.object({
   scenePlan:z.string().trim().min(1).max(30000),
   questions:z.array(z.string().trim().min(1).max(2000)).max(100),
@@ -19,16 +19,21 @@ export function spatialShot(p,shot) {
 export function applySpatialPlan(store,p,result,validateShot) {
   checkSpatialShots(p,result);
   if(result.questions.length)fail('请先解决空间设定的待确认事项，并在提案中更新说明',409);
+  const before=new Map(p.shots.map(s=>[s.id,shotHash(p,s)]));
+  const previous=p.spatialPlan;
+  const states=result.shots.map(({id,startState,endState,transitionFromPrevious})=>({id,startState,endState,transitionFromPrevious}));
+  const sameSpace=previous&&fingerprint({scenePlan:previous.scenePlan,shots:previous.shots})===fingerprint({scenePlan:result.scenePlan,shots:states});
   const next=p.shots.map((s,i)=>({...s,framing:result.shots[i].framing,continuity:result.shots[i].continuity,prompt:result.shots[i].prompt}));
   // Validate text against the evidence it was drafted from. Applying new upstream
   // blocking then invalidates downstream anchors; it must not prevent text adoption.
   for(const s of next)validateShot(store,p,s,{allowHistoricalAnchor:true});
   p.shots=next;
-  p.spatialPlan={owner:'Sean',scenePlan:result.scenePlan,shots:result.shots.map(({id,startState,endState,transitionFromPrevious})=>({id,startState,endState,transitionFromPrevious})),sourceHash:spatialSourceHash(p)};
+  p.spatialPlan={owner:'Sean',scenePlan:result.scenePlan,shots:states,sourceHash:spatialSourceHash(p),...(sameSpace?{renderSourceHash:previous.renderSourceHash||previous.sourceHash}:{})};
   // Adoption records changed blocking; subsequent generation captures current inputs.
   p.pipeline.shots={inputHash:shotsSourceHash(p),confirmedHash:null};
   p.pipeline.promptInputs=Object.fromEntries(p.shots.map(s=>[s.id,promptSourceHash(p,s)]));
-  p.planWarnings=[];invalidate(p);
+  p.planWarnings=[];p.approval=null;p.cutStale=true;
+  for(const s of p.shots)if(before.get(s.id)!==shotHash(p,s)){s.stale=true;s.selectedCandidateId=null;}
 }
 export function exportedFacts(entity) {
   const {assets,snapshotId,snapshotVersion,missingFields,...facts}=entity;
