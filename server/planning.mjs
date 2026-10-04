@@ -237,6 +237,7 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
       const repairedWarnings=[];
       const items=stage==='spatial'?repaired.shots:[{id:shotId,prompt:repaired.prompt}];
       for(const item of items)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),...(stage==='spatial'?{framing:item.framing,continuity:item.continuity}:{}),prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){repairedWarnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
+      if(repairedWarnings.length){attempt.validationWarnings=repairedWarnings;fail('字数修订仍未通过校验；已保留原稿',502);}
       result=repaired;warnings.splice(0,warnings.length,...repairedWarnings);attempt.adopted=true;
     }catch(e){attempt.error=e.message;attempt.adopted=false;}
     provenance.repairAttempts=[attempt];capture({...provenance,warnings});

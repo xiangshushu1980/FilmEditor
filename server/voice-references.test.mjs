@@ -76,11 +76,13 @@ test('voice ancestry ignores old relations carried by another current entity sna
 });
 
 test('word-budget repair is bounded and preserves the original draft when repair fails',async()=>{
-  for(const repairCase of ['valid','invalid','empty']) {
+  for(const repairCase of ['valid','invalid','empty','still-too-long','too-short','missing-binding','changed-dialogue']) {
     const repairFails=repairCase!=='valid';
     const {p,shot,store}=fixture();let calls=0,messages;
     const tooLong=shot.prompt.replace('The camera holds both women seated at the same library table. '.repeat(31),'The camera holds both women seated at the same library table. '.repeat(48));
-    const server=createServer(async(req,res)=>{let body='';for await(const part of req)body+=part;messages=JSON.parse(body).messages;calls++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:calls===1?JSON.stringify({prompt:tooLong}):repairCase==='empty'?'':repairFails?'invalid JSON':JSON.stringify({prompt:shot.prompt})}}]}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+    const repairedPrompt=repairCase==='still-too-long'?tooLong:repairCase==='too-short'?shot.prompt.replace('The camera holds both women seated at the same library table. '.repeat(31),'The camera holds both women seated at the same library table. '.repeat(20)):repairCase==='missing-binding'?shot.prompt.replaceAll('<Picture 1>','missing image'):repairCase==='changed-dialogue'?shot.prompt.replace(shot.dialogue[0].text,'different words'):shot.prompt;
+    const repairText=repairCase==='empty'?'':repairCase==='invalid'?'invalid JSON':JSON.stringify({prompt:repairedPrompt});
+    const server=createServer(async(req,res)=>{let body='';for await(const part of req)body+=part;messages=JSON.parse(body).messages;calls++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:calls===1?JSON.stringify({prompt:tooLong}):repairText}}]}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
     try {
       p.settings.llm.baseUrl=`http://127.0.0.1:${server.address().port}`;prepareCurrentInputs(store,p,'prompt',shot.id);const captures=[];const out=await generateStage(store,{},p,'prompt',shot.id,v=>captures.push(v));
       assert.equal(calls,2);assert.equal(out.provenance.repairAttempts.length,1);assert.equal(out.provenance.repairAttempts[0].adopted,!repairFails);assert.equal(out.result.prompt,repairFails?tooLong:shot.prompt);assert.equal(out.provenance.warnings.length,repairFails?1:0);assert.equal(messages[2].content,JSON.stringify({prompt:tooLong}));assert.ok(messages[3].content.includes('400–450'));assert.equal(captures.length,2);
