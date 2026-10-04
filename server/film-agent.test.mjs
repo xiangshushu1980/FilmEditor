@@ -54,18 +54,20 @@ test('shot structure proposal splits atomically, preserves unchanged selection, 
   store.candidate({id:removedCandidateId,projectId:p.id,shotId:removedId,status:'succeeded',input:{shot:state.shots[1],shotHash:shotHash(state,state.shots[1])},media:{hash:'retained removed evidence'}});
   store.candidate({id:candidateId,projectId:p.id,shotId:state.shots[0].id,status:'succeeded',input:{shot:state.shots[0],shotHash:shotHash(state,state.shots[0])},media:{hash:'retained'}});
   state=store.edit(p.id,state.revision,v=>{v.shots[0].selectedCandidateId=candidateId;v.shots[0].stale=false;});
+  state=store.edit(p.id,state.revision,v=>{v.shots[1].prompt='obsolete prompt draft';v.pipeline.promptInputs[v.shots[1].id]='old';},'pipeline-test-stale');
   let c=await invoke('get_film_context');const second={...c.shots[1]};
   const clean=s=>Object.fromEntries(Object.entries(s).filter(([k])=>!['promptStatus','binding','selectedCandidateId'].includes(k)));
   const first=clean(c.shots[0]),a={...clean(second),action:'remove coat and hold'},b={...spec(),action:'place held coat'};
   const patch={summary:'split removal and placement',shots:[first,a,b]};
   const dup=await invoke('propose_film_revision',{revision:c.revision,patch:{...patch,shots:[first,first]}});assert.equal(dup.validation.valid,false);
   const bad=await invoke('propose_film_revision',{revision:c.revision,patch:{...patch,shots:[first,{...a,entityIds:[id()]}]}});assert.equal(bad.validation.valid,false);
-  const v=await invoke('propose_film_revision',{revision:c.revision,patch});assert.equal(v.validation.valid,true);assert.deepEqual(v.validation.timing,{previousPlannedSec:8,plannedSec:12,targetSec:10,deltaSec:2});assert.equal(v.validation.incompletePromptShotIds.length,3);
+  const changedInvalid=await invoke('propose_film_revision',{revision:c.revision,patch:{...patch,shots:[first,{...a,prompt:'new invalid prompt'},b]}});assert.equal(changedInvalid.validation.valid,false);
+  const v=await invoke('propose_film_revision',{revision:c.revision,patch});assert.equal(v.validation.valid,true,JSON.stringify(v.validation));assert.equal(v.validation.deferredPromptIssues.length,1);assert.deepEqual(v.validation.timing,{previousPlannedSec:8,plannedSec:12,targetSec:10,deltaSec:2});assert.equal(v.validation.incompletePromptShotIds.length,2);
   const jobId=id();store.job({id:jobId,projectId:p.id,status:'running',kind:'shots'});
   assert.equal((await invoke('apply_film_proposal',{revision:c.revision,proposalId:v.proposalId})).status,409);assert.equal(store.get(p.id).shots.length,2);
   store.job({id:jobId,projectId:p.id,status:'failed',kind:'shots'});
   const applied=await invoke('apply_film_proposal',{revision:c.revision,proposalId:v.proposalId});assert.equal(applied.revision,c.revision+1);
-  state=store.get(p.id);assert.equal(state.shots.length,3);assert.equal(state.shots[0].selectedCandidateId,candidateId);assert.equal(state.shots[1].selectedCandidateId,null);assert.equal(state.shots[2].stale,true);assert.equal(store.candidates(p.id).length,2);
+  state=store.get(p.id);assert.equal(state.shots.length,3);assert.equal(state.shots[0].selectedCandidateId,candidateId);assert.equal(state.shots[1].selectedCandidateId,null);assert.equal(state.shots[2].stale,true);assert.equal(generationStatus(state).prompts.find(v=>v.shotId===a.id).status,'stale');assert.equal(store.candidates(p.id).length,2);
   c=await invoke('get_film_context');const remove=await invoke('propose_film_revision',{revision:c.revision,patch:{summary:'remove active shot only',shots:[clean(c.shots[0]),clean(c.shots[2])]}});await invoke('apply_film_proposal',{revision:c.revision,proposalId:remove.proposalId});assert.equal(store.get(p.id).shots.some(s=>s.id===removedId),false);assert.ok(store.candidates(p.id).some(c=>c.id===removedCandidateId&&c.shotId===removedId));
- });try{const {s}=await begin(f);const d=await finish(f.service,s.id);assert.equal(d.runs[0].status,'succeeded');assert.ok(f.store.planningVersions(f.p.id).some(v=>v.content.shots.length===3));assert.equal(f.counts().videoCalls,0);}finally{f.close();}
+ });try{const {s}=await begin(f);const d=await finish(f.service,s.id);assert.equal(d.runs[0].status,'succeeded',d.runs[0].error);assert.ok(f.store.planningVersions(f.p.id).some(v=>v.content.shots.length===3));assert.equal(f.counts().videoCalls,0);}finally{f.close();}
 });
