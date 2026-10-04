@@ -41,8 +41,11 @@ export function validateShot(store,p,shot,{allowHistoricalAnchor=false}={}) {
   if(/^\[Shot 1\]/.test(fields.detailed_description)||/\[Shot 1\]\s+At\s+\d/.test(fields.detailed_description))fail('风格说明须在 Shot 1 前，Shot 1 不带时间戳');
   const words=fields.detailed_description.split(/\s+/).length;
   if(words<350||words>500)fail(`detailed_description 应为 350–500 词，当前 ${words}`);
-  // A definition may wrap across lines or share a paragraph with another entry.
-  const definitions=[...fields.subject_definitions.matchAll(/<Subject (\d+)>([\s\S]*?)(?=<(?:Subject|Audio|Video) \d+>|$)/g)];
+  // Entry labels begin a line (official format), or a sentence in legacy
+  // paragraphs. A Subject mentioned inside an entry is a reference, not a
+  // new definition: same-person cross-references must not truncate bindings.
+  const entries=[...fields.subject_definitions.matchAll(/(?:^[ \t]*|(?<=[.!?])[ \t]+)<(Subject|Audio|Video|Picture) (\d+)>/gm)];
+  const definitions=entries.flatMap((m,i)=>m[1]==='Subject'?[[m[0],m[2],fields.subject_definitions.slice(m.index+m[0].length,entries[i+1]?.index)]]:[]);
   const subjects=new Set(definitions.map(m=>m[1]));
   for(const match of shot.prompt.matchAll(/<(Subject|Picture|Audio|Video) (\d+)>/g)) {
     const n=Number(match[2]);

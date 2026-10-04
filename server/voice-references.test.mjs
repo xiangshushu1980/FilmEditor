@@ -33,6 +33,19 @@ test('voice prompt validates speaker/image provenance and timbre retention witho
   assert.throws(()=>validateShot(store,p,{...shot,prompt:shot.prompt.replaceAll('<Audio 1>','<Audio 2>')}),/未解析引用/);
   const locked={...shot,nativeAudioAssetId:bindings(store,p,shot).voiceReferences[0].assetId,verifiedAudioTranscript:'你好',prompt:shot.prompt.replace('audio reference','audio reuse').replace('<Audio 1>: reference','<Audio 1>: fully_copy')};assert.ok(validateShot(store,p,locked).audio);assert.deepEqual(validateShot(store,p,locked).voiceReferences,[]);
 });
+test('subject cross-references do not masquerade as definitions or truncate picture bindings',()=>{
+ const {p,shot,store}=fixture();
+ const pair='<Subject 1> is A defined by <Picture 1>.\n<Subject 2> is B defined by <Picture 2>.';
+ for(const definitions of [
+  '<Subject 1> is character A, the same identity as <Subject 2>, whose appearance is defined by <Picture 1>.\n<Subject 2> is the appearance reference defined by <Picture 2> for <Subject 1>.',
+  '<Subject 1> is A defined by <Picture 1>, the same identity as <Subject 2>.\n<Subject 2> is the appearance reference defined by <Picture 2>.',
+  '<Subject 1> is A defined by <Picture 1>. <Subject 2> is B defined by <Picture 2>.',
+  '<Subject 1> is A, the same identity as <Subject 2>,\nwhose appearance is defined by <Picture 1>.\n<Subject 2> is the appearance reference defined by <Picture 2>.'
+ ])assert.ok(validateShot(store,p,{...shot,prompt:shot.prompt.replace(pair,definitions)}));
+ const missing='<Subject 1> is A, the same identity as <Subject 2>.\n<Subject 2> is B defined by <Picture 1> and <Picture 2>.';
+ assert.throws(()=>validateShot(store,p,{...shot,prompt:shot.prompt.replace(pair,missing)}),/<Subject 1>.*明确绑定/);
+ assert.throws(()=>validateShot(store,p,{...shot,prompt:shot.prompt.replace(pair,'<Subject 1> is A defined by <Picture 1>, greeting <Subject 2> from <Picture 2>.')}),/未解析引用 <Subject 2>/);
+});
 test('graph sends voice assets to independent reference ports and keeps native lock separate',()=>{
   const {p,shot}=fixture();let wf=graph({shot,render:p.settings.render},{images:['a.png'],voices:['a.wav','b.wav']},id());assert.deepEqual(wf['6'].inputs['ref_audios.ref_audio_0'],['200',0]);assert.equal(wf['201'].inputs.audio,'b.wav');assert.equal(wf['17'],undefined);
   wf=graph({shot,render:p.settings.render},{images:['a.png'],audio:'track.wav',voices:[]},id());assert.equal(wf['17'].class_type,'MiniMaxH3NativeAudioLock');assert.equal(wf['6'].inputs['ref_audios.ref_audio_0'],undefined);
