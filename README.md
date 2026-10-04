@@ -64,7 +64,9 @@ hive-resource register service --id service:sean-film-editor --name 'Sean Film E
 
 ## 声音与 Ref2VA
 
-默认镜头对白由 H3 生成；导入的基础声音可听审，**不默认作为音色参考端口**。想完整复用已有音频时，在镜头高级区选“锁定已有音频”：听音频、输入人工核对原话、设置与源录音一致的时长（±0.2秒）、让逐镜对白与原话逐字相同，并修改 prompt 为 `audio reuse`/`fully_copy`。链路使用 **NativeAudioLock**，不会当作普通 `ref_audio`。
+默认镜头对白由 H3 生成。有对白且未锁定整段音频时，系统自动将说话实体当前唯一的基础声音接为音色参考，并将具体 `<Audio N>` 与全片稳定说话者 ID 写入提示词上下文；每镜最多三个独立音色参考。派生角色通过当前「派生自」关系沿用基础角色声音，关系循环或多个基础来源会阻止提交。缺少基础声音时不会补造素材；已绑定端口也不代表音色效果已验收，仍需听审。
+
+想完整复用已有音频时，在镜头高级区选“锁定已有音频”：听音频、输入人工核对原话、设置与源录音一致的时长（±0.2秒）、让逐镜对白与原话逐字相同，并修改 prompt 为 `audio reuse`/`fully_copy`。链路使用 **NativeAudioLock**，不会当作普通 `ref_audio`，也不会同时自动加入说话者音色参考。
 
 提示词契约来自 [.pi H3 skill](../.pi/skills/h3-prompt-writing/SKILL.md)、[Ref2VA官方格式](../.pi/skills/h3-prompt-writing/references/ref-en.txt)与[项目规则17](../docs/17_h3_prompt_writing_rules.md)。适配器和参数参照[已验证实验](../experiments/ai_film_editor_flow_20261003/README.md)及其 manifest。已测 H3 输出存在时长扩展（4秒请求实际4.458秒），此应用保留实际媒体并在合成时用 ffprobe 时长；NativeAudioLock 不代表已验收逐样本音频一致。
 
