@@ -221,8 +221,8 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
     try {
       const rr=await request(`${llm.baseUrl.replace(/\/$/,'')}/chat/completions`,{method:'POST',signal:AbortSignal.timeout(600000),headers:{'Content-Type':'application/json',...(config.llmKey?{Authorization:`Bearer ${config.llmKey}`}:{})},body:JSON.stringify({model:llm.model,temperature:llm.temperature,messages})});
       const rawRepair=await rr.json(),repairText=rawRepair.choices?.[0]?.message?.content;
-      Object.assign(attempt,{responseId:rawRepair.id||null,usage:rawRepair.usage||null,rawResponse:repairText||null});
-      if(typeof repairText!=='string')fail('字数修订未返回文本',502);
+      Object.assign(attempt,{responseId:rawRepair.id||null,usage:rawRepair.usage||null,finishReason:rawRepair.choices?.[0]?.finish_reason||null,rawResponse:typeof repairText==='string'?repairText:null});
+      if(typeof repairText!=='string'||!repairText.trim())fail('字数修订未返回可用文本；已保留原稿',502);
       const parsed=JSON.parse(repairText.replace(/^```(?:json)?\s*|\s*```$/g,''));
       let repaired;
       if(stage==='spatial') {
