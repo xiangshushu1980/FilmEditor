@@ -26,4 +26,6 @@ SQLite revision 与事务保护并发写回；不可变 `planning_versions` 保�
 
 2026-10-04 真实接口回归在隔离项目 `538005c3-16bd-4709-aa4e-70831b960a24` 执行：真实模型生成剧本（revision 3→4）；应用内 Agent 通过提案只补充 A 落座的动作（4→5），逐字核对仅发生指定替换，对白保持原文；拍摄本直接使用修改后的剧本生成（5→6），产生七镜、计划总时长 30 秒。没有调用独立确认接口，各次修改保存在创作版本中。证据：[剧本结果](../experiments/sean_film_agent_20261004/sean_real_script_stage_result.json)、[Agent 修改](../experiments/sean_film_agent_20261004/sean_script_stage_agent_repair.json)、[拍摄本结果](../experiments/sean_film_agent_20261004/sean_real_shots_stage_result.json)。这是文字阶段验证，服装脱换范围、放置位置及实际动作时长仍须在后续空间与提示词阶段细化。
 
+随后应用 Agent 核对实体及参考图，采用五份独立提案，将剧本和第4–7镜明确为只换指定外套、保留其余衣物、指定衣物支撑面及同一身份（6→11）。逐字段核对对白、实体、设定、前三镜完全不变；后四镜仅 action／continuity 修改，ID、顺序、时长与引用保持。证据：[服装修订与前后完整状态](../experiments/sean_film_agent_20261004/sean_stage_clothing_agent_repair.json)。A 的内搭是新增本片调度，未声称实体已有登记。模型曾两次提交错误结构，被校验拒绝后重提；没有部分写回。第7镜四秒内取衣、穿衣、转圈仍偏紧，文字明确不代表时间可行。
+
 另一隔离项目 `70338d49-e494-433f-a753-738fbd3dafc9` 已实际生成并选用五镜，合成成片通过完整音视频解码检查；抽帧检查了同一阅读桌、人物方位、刀与衣服的交接及末镜一次转圈。当前成片实际为 38.605 秒，不能据此宣称达到 30 秒目标；音色区分、口型及完整观感仍待验收。证据：[成片输入与探测](../experiments/sean_film_agent_20261004/sean_coherence_current_cut.json)、[检查记录](../experiments/sean_film_agent_20261004/sean_coherence_current_cut_qc.json)。用户原项目未被测试结果覆盖。固定响应的恢复测试与真实生成的质量证据分别记录，不以参数正确替代听感或连续性验收。
