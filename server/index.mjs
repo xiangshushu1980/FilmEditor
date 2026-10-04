@@ -144,7 +144,7 @@ function spatialReview(req) {
   if(p.revision!==b.revision||job.input.revision!==b.revision)fail('项目已改变，请基于当前拍摄本重新生成',409);
   checkSpatialShots(p,b.result);
   const warnings=[];
-  for(const item of b.result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
+  for(const item of b.result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
   return {projectId,job,b,validation:{warnings,questions:b.result.questions,valid:!warnings.length&&!b.result.questions.length}};
 }
 app.post('/api/projects/:id/jobs/:jobId/validate-spatial',(req,res)=>res.json(spatialReview(req).validation));
