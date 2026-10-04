@@ -2,6 +2,8 @@
 import { id, now, fail, fingerprint, canonical, hash, invalidate } from './store.mjs';
 import {anchorAsset} from './visual-anchors.mjs';
 import {voiceReferences} from './voice-references.mjs';
+// Current MiniMaxH3ReferenceToVideo ref_images port exposes a maximum of nine.
+export const maxReferenceImages=9;
 export async function request(url, options={}) {
   const response=await fetch(url,{redirect:'error',signal:AbortSignal.timeout(60000),...options});
   if(!response.ok)fail(`上游请求失败 (${response.status}): ${(await response.text()).slice(0,1500)}`,502);
@@ -73,7 +75,7 @@ export function bindings(store,p,shot,{allowHistoricalAnchor=false}={}) {
     const a=assets.find(a=>a.assetId===assetId&&a.mediaType==='image');if(!a)fail('镜头引用图不属于当前快照中的已选实体');return a;
   });
   const anchor=anchorAsset(store,p,shot,{allowHistorical:allowHistoricalAnchor});if(anchor)images.push(anchor);
-  if(images.length>12)fail('含衔接参考帧最多使用12张图片');
+  if(images.length>maxReferenceImages)fail(`本机 H3 每镜最多使用${maxReferenceImages}张参考图片（含衔接帧），请减少重复视图`);
   const audio=shot.nativeAudioAssetId?assets.find(a=>a.assetId===shot.nativeAudioAssetId&&a.mediaType==='audio'):null;
   if(shot.nativeAudioAssetId&&!audio)fail('锁定声音不存在于当前实体快照');
   const relations=store.snapshots(p.id).filter(s=>Object.values(p.entities).some(e=>e.snapshotId===s.id)).flatMap(s=>(s.manifest.relations||[]).filter(r=>p.entities[r.sourceEntityId]?.snapshotId===s.id));

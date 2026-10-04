@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fail, now, hash } from './store.mjs';
-import { request } from './reference.mjs';
+import { request, maxReferenceImages } from './reference.mjs';
 const exec=promisify(execFile);
 export async function resourceCli(...args) {
   const userBin=path.join(homedir(),'.pi','agent','bin');
@@ -41,6 +41,7 @@ export function graph(input,uploads,candidateId) {
     '14':node('CreateVideo',{images:['12',0],fps:24,audio:['13',0],bit_depth:8}),
     '15':node('SaveVideo',{video:['14',0],filename_prefix:`video/sean_film_editor/${candidateId}/clip`,format:'mp4',codec:'auto'}),
   };
+  if(uploads.images.length>maxReferenceImages)fail(`H3参考图片超过${maxReferenceImages}张端口上限`);
   uploads.images.forEach((a,i)=>{const n=String(100+i);wf[n]=node('LoadImage',{image:a});wf['6'].inputs[`ref_images.ref_image_${i}`]=[n,0];});
   (uploads.voices||[]).forEach((a,i)=>{const n=String(200+i);wf[n]=node('LoadAudio',{audio:a});wf['6'].inputs[`ref_audios.ref_audio_${i}`]=[n,0];});
   if(uploads.audio) {

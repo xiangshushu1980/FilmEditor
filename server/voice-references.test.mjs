@@ -86,3 +86,12 @@ test('spatial word repair changes only listed prompts and rejects foreign shot I
     }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
   }
 });
+
+test('reference image limit matches the actual nine-image H3 port including all bound images',()=>{
+  const {p,shot,store,entities,snapshot}=fixture();
+  for(let i=0;i<8;i++){const a={assetId:id(),entityId:entities[0].entityId,role:'three_view',mediaType:'image',mime:'image/png'};entities[0].assets.push(a);snapshot.assets[a.assetId]={...a,hash:'b'.repeat(64)};shot.imageAssetIds.push(a.assetId);}
+  assert.throws(()=>bindings(store,p,shot),/最多使用9张/);
+  shot.imageAssetIds.pop();assert.equal(bindings(store,p,shot).images.length,9);
+  assert.throws(()=>graph({shot,render:p.settings.render},{images:Array(10).fill('image.png'),voices:[]},id()),/9张端口上限/);
+  const wf=graph({shot,render:p.settings.render},{images:Array(9).fill('image.png'),voices:[]},id());assert.deepEqual(wf['6'].inputs['ref_images.ref_image_8'],['108',0]);
+});
