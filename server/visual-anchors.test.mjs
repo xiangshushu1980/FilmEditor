@@ -10,6 +10,7 @@ import {setVisualAnchor,removeVisualAnchor,anchorAsset} from './visual-anchors.m
 import {bindings} from './reference.mjs';
 import {validateShot,prepareCurrentInputs} from './planning.mjs';
 import {mediaTool} from './render.mjs';
+import {applySpatialPlan,currentSpatialPlan} from './spatial.mjs';
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'sean-anchor-test-')),store=new Store(dir),video=join(dir,'fixture.mp4'),image=join(dir,'fixture.png');
   execFileSync(mediaTool('ffmpeg'),['-v','error','-f','lavfi','-i','testsrc2=size=128x96:rate=12','-t','1','-c:v','libx264','-pix_fmt','yuv420p',video]);
@@ -54,4 +55,21 @@ test('anchored prompt must declare the real frame role; unanchored prompt cannot
     assert.equal(validateShot(store,next,{...s,prompt:text}).images.length,2);assert.throws(()=>validateShot(store,next,{...s,prompt:text.replace(' + keyframe completion','')}),/衔接参考帧/);assert.throws(()=>validateShot(store,next,{...s,prompt:text.replace('edited first frame','an entity portrait')}),/衔接参考帧/);
     removeVisualAnchor(store,p.id,next.revision,s.id);const removed=store.get(p.id);assert.throws(()=>validateShot(store,removed,{...s,prompt:text}),/没有衔接参考帧/);
   }finally{f.close();}
+});
+
+// Text adoption invalidates future frame lineage, rather than deadlocking on that expected change.
+test('spatial adoption uses original evidence and invalidates downstream frames and prompts',async()=>{
+ const f=fixture();try{const {store,p,c2}=f;await setVisualAnchor(store,p.id,p.revision,p.shots[2].id,c2.id);const before=store.get(p.id);
+  const text=anchored=>`subject_definitions:\n<Subject 1> is A from <Picture 1>.${anchored?'\n<Picture 2> is the edited first frame of [Shot 1].':''}\nsummary:\n[reference generation${anchored?' + keyframe completion':''}] A sits.\nretention_analysis:\n<Subject 1>: fully_preserved - identity.${anchored?'\n<Picture 2>: partially_preserved - layout.':''}\ndetailed_description:\nA realistic indoor video. [Shot 1] ${anchored?'The shot begins from <Picture 2>.':''} ${'Room table light. '.repeat(120)}\noverall_soundscape:\nRoom tone.\nnon_diegetic_music:\nN/A`;
+  const result={scenePlan:'同一张桌，新的全片空间说明。',questions:[],shots:before.shots.map((s,i)=>({id:s.id,framing:'updated framing',continuity:'same table',startState:'sit',endState:'sit',transitionFromPrevious:i?'same state':'',changes:['说明更清楚'],prompt:text(i===2)}))};
+  const next=store.edit(p.id,before.revision,p=>applySpatialPlan(store,p,result,validateShot),'pipeline-spatial-test');
+  assert.equal(next.spatialPlan.scenePlan,result.scenePlan);assert.ok(currentSpatialPlan(next));assert.equal(next.visualAnchors[p.shots[2].id].sourceCandidateId,c2.id);assert.equal(generationStatus(next).anchors[0].status,'stale');assert.equal(generationStatus(next).prompts[2].status,'stale');
+  prepareCurrentInputs(store,next,'spatial');
+  assert.throws(()=>prepareCurrentInputs(store,next,'video',next.shots[2].id),/来源已变化/);
+  assert.throws(()=>bindings(store,next,next.shots[2]),/来源已变化/);
+  const historical=bindings(store,next,next.shots[2],{allowHistoricalAnchor:true}).images.at(-1);assert.equal(historical.provenance.historical,true);assert.equal(historical.provenance.isCurrent,false);
+  assert.equal(validateShot(store,next,next.shots[2],{allowHistoricalAnchor:true}).images.at(-1).provenance.historical,true);
+  prepareCurrentInputs(store,next,'revision',next.shots[2].id);
+  assert.ok(store.planningVersions(p.id).some(v=>v.content.visualAnchors?.[p.shots[2].id]));
+ }finally{f.close();}
 });

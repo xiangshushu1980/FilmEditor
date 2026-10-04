@@ -20,10 +20,12 @@ export function applySpatialPlan(store,p,result,validateShot) {
   checkSpatialShots(p,result);
   if(result.questions.length)fail('请先解决空间设定的待确认事项，并在提案中更新说明',409);
   const next=p.shots.map((s,i)=>({...s,framing:result.shots[i].framing,continuity:result.shots[i].continuity,prompt:result.shots[i].prompt}));
-  for(const s of next)validateShot(store,{...p,shots:next},s);
+  // Validate text against the evidence it was drafted from. Applying new upstream
+  // blocking then invalidates downstream anchors; it must not prevent text adoption.
+  for(const s of next)validateShot(store,p,s,{allowHistoricalAnchor:true});
   p.shots=next;
   p.spatialPlan={owner:'Sean',scenePlan:result.scenePlan,shots:result.shots.map(({id,startState,endState,transitionFromPrevious})=>({id,startState,endState,transitionFromPrevious})),sourceHash:spatialSourceHash(p)};
-  // Adoption edits blocking; the shotlist still requires explicit confirmation.
+  // Adoption records changed blocking; subsequent generation captures current inputs.
   p.pipeline.shots={inputHash:shotsSourceHash(p),confirmedHash:null};
   p.pipeline.promptInputs=Object.fromEntries(p.shots.map(s=>[s.id,promptSourceHash(p,s)]));
   p.planWarnings=[];invalidate(p);

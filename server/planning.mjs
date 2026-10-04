@@ -20,12 +20,12 @@ export function languageName(value) {
   const aliases={'chinese':'Chinese','zh':'Chinese','zh-cn':'Chinese','zh-hans':'Chinese','mandarin':'Chinese','普通话':'Chinese','中文':'Chinese','cantonese':'Cantonese','yue':'Cantonese','yue-hk':'Cantonese','粤语':'Cantonese','english':'English','en':'English','en-us':'English','en-gb':'English','japanese':'Japanese','ja':'Japanese','ja-jp':'Japanese','korean':'Korean','ko':'Korean','ko-kr':'Korean'};
   return aliases[key]||key;
 }
-export function validateShot(store,p,shot) {
+export function validateShot(store,p,shot,{allowHistoricalAnchor=false}={}) {
   // Persisted shots include application state; keep the editable input schema strict.
   const {stale,selectedCandidateId,...content}=shot;
   shotSchema.parse(content);
   if(new Set(shot.entityIds).size!==shot.entityIds.length||new Set(shot.imageAssetIds).size!==shot.imageAssetIds.length)fail('镜头引用不能重复');
-  const b=bindings(store,p,shot);
+  const b=bindings(store,p,shot,{allowHistoricalAnchor});
   const rx=new RegExp(`^(${sections.join('|')}):\\s*`,'gm');
   const matches=[...shot.prompt.matchAll(rx)];
   if(matches.map(m=>m[1]).join(',')!==sections.join(','))fail('提示词必须按 Ref2VA 六段式填写');
@@ -79,13 +79,13 @@ export function validatePlan(store,p) {
   if(issues.length)fail(issues.join('\n'));
 }
 export function approved(p,shotId=null) {return p.approval?.hash===approvalHash(p)&&(!p.approval.scope||p.approval.scope==='project'||p.approval.shotId===shotId);}
-export function validateShotlist(store,p,shotId=null) {
+export function validateShotlist(store,p,shotId=null,{allowHistoricalAnchor=false}={}) {
   if(!p.shots.length||p.shots.length>40||new Set(p.shots.map(s=>s.id)).size!==p.shots.length)fail('请填写 1–40 个镜头，ID 不可重复');
   for(const s of p.shots.filter(s=>!shotId||s.id===shotId)) {
     const {stale,selectedCandidateId,...content}=s;shotSchema.parse(content);
     if(!s.action.trim()||!s.framing.trim()||!s.camera.trim())fail(`镜头「${s.title}」须填写动作、构图和运镜`);
     if(new Set(s.entityIds).size!==s.entityIds.length||new Set(s.imageAssetIds).size!==s.imageAssetIds.length)fail(`镜头「${s.title}」引用重复`);
-    bindings(store,p,s);
+    bindings(store,p,s,{allowHistoricalAnchor});
     for(const d of s.dialogue)if(!s.entityIds.includes(d.speaker))fail(`镜头「${s.title}」说话者不属于当前镜头`);
   }
 }
@@ -112,7 +112,7 @@ export function prepareCurrentInputs(store,p,stage,shotId) {
   const target=['prompt','revision','video'].includes(stage)?p.shots.find(s=>s.id===shotId):null;
   if(['prompt','revision','video'].includes(stage)&&!target)fail('镜头不存在',404);
   // Keep the full ordered project for predecessor-frame checks; validate only the requested plan.
-  validateShotlist(store,p,target?.id);
+  validateShotlist(store,p,target?.id,{allowHistoricalAnchor:stage!=='video'});
   p.pipeline.shots={inputHash:shotsSourceHash(p),confirmedHash:shotsContentHash(p),mode:'generation-input',scope:target?'shot':'project',shotId:target?.id,at:now()};
   if(stage==='video') {
     if(p.spatialPlan&&!currentSpatialPlan(p))fail('共用空间和站位已过期，请先修订拍摄本中的全片空间与提示词',409);
@@ -156,13 +156,13 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
     Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue});
     instructions='Create ONLY the editable shotlist from the confirmed script and dialogue, without rewriting either. Schema {shots:[{title:string,durationSec:number(4..15),entityIds:UUID[],imageAssetIds:UUID[],action:string,framing:string,camera:string,continuity:string,dialogue:[{speaker:entityUUID,text:string,language:string}]}]}. Split into independent clips, one dominant action each, with continuity and ordered image references belonging to selected entities. Use exact approved dialogue in order, without additions, omissions or paraphrases. dialogue.language uses natural names Chinese/English/Cantonese, not locale codes. Do not produce prompt, id, seed or audio-lock fields.';schema=shotlistSchema;
   }else if(stage==='spatial') {
-    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,currentFilmSpaceInstructions:p.spatialPlan?.scenePlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:imageBindingContext(bindings(store,p,s).images)}))});
-    if(spatialRevision)Object.assign(context,{reviewedProposal:spatialRevision.draft,revisionRequest:spatialNotes||'',validationIssues:spatialRevision.draft.shots.flatMap(item=>{try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt});return [];}catch(e){return [{shotId:item.id,message:e.message}];}})});
+    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,spatialNotes:spatialNotes||'',previousSpatialPlan:p.spatialPlan||null,currentFilmSpaceInstructions:p.spatialPlan?.scenePlan||null,shotOrder:p.shots.map(s=>({...shotPlan(s),currentPrompt:s.prompt,imageBindings:imageBindingContext(bindings(store,p,s,{allowHistoricalAnchor:true}).images)}))});
+    if(spatialRevision)Object.assign(context,{reviewedProposal:spatialRevision.draft,revisionRequest:spatialNotes||'',validationIssues:spatialRevision.draft.shots.flatMap(item=>{try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt},{allowHistoricalAnchor:true});return [];}catch(e){return [{shotId:item.id,message:e.message}];}})});
     instructions=referenceInstructions+'\n'+spatialInstructions+'\nReturn ONLY {scenePlan:string,questions:string[],shots:[{id:existingUUID,framing:string,continuity:string,startState:string,endState:string,transitionFromPrevious:string,prompt:string,changes:string[]}]}. Cover every existing shot exactly once in the existing order. Write scenePlan, physical start/end states, transition explanations, changes and questions in Chinese for human review, and complete video prompts in English with original dialogue. First establish one shared scene plan for each location, separate authoritative facts from proposed film blocking. currentFilmSpaceInstructions contains user-editable film blocking requirements; honor them where consistent with entity facts and approved actions, and list material conflicts as questions. Do not treat previous prompts or previousSpatialPlan as authoritative scene evidence: repair their invented furniture or spatial contradictions. startState/endState record physical states, not camera composition; explain all non-contiguous states in transitionFromPrevious. Return questions:[] only when there is enough evidence to draft consistent blocking without inventing material scene facts. For each shot with nativeAudioAssetId, preserve the verifiedAudioTranscript and declare audio reuse, <Audio 1> and fully_copy; otherwise no Audio labels. Never return a modified script, dialogue, action, camera, cast, references or duration.';schema=spatialSchema;
     if(spatialRevision)instructions+='\nRevise the supplied reviewedProposal using revisionRequest and validationIssues. Preserve human edits where compatible with authoritative entities and approved shots. Resolve questions only when the user supplied sufficient answers; retain unresolved questions. Never silently change approved actions or duration to resolve timing. Correct the six-section format including moving the style opening BEFORE [Shot 1]. Return a new complete proposal for human review, not automatic adoption.';
   }else {
     const shot=p.shots.find(s=>s.id===shotId);
-    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,confirmedShot:shotPlan(shot),sharedSpatialPlan:currentSpatialPlan(p),currentBlocking:spatialShot(p,shot),shotOrder:p.shots.map(s=>({...shotPlan(s),prompt:s.prompt,blocking:spatialShot(p,s)})),imageBindings:imageBindingContext(bindings(store,p,shot).images)});
+    Object.assign(context,{confirmedScript:p.script,confirmedDialogue:p.dialogue,confirmedShot:shotPlan(shot),sharedSpatialPlan:currentSpatialPlan(p),currentBlocking:spatialShot(p,shot),shotOrder:p.shots.map(s=>({...shotPlan(s),prompt:s.prompt,blocking:spatialShot(p,s)})),imageBindings:imageBindingContext(bindings(store,p,shot,{allowHistoricalAnchor:true}).images)});
     instructions=referenceInstructions+'\nThis request returns ONLY {prompt:string} for confirmedShot. Do not return or rewrite script, dialogue, shot fields, IDs or reference order. Preserve every approved dialogue line exactly once in the prompt using its language label. Use the confirmed nativeAudioAssetId and verifiedAudioTranscript only if present: declare audio reuse, <Audio 1> and fully_copy. Otherwise no Audio labels. Output a complete six-section Ref2VA prompt for this one clip.';schema=promptSchema;
   }
   if(stage==='revision') {
@@ -189,7 +189,7 @@ export async function generateStage(store,config,p,stage,shotId,capture,feedback
   if(stage==='spatial')checkSpatialShots(p,result,502);
   // Keep editable prompt drafts even if semantic checks need human correction.
   const warnings=[];
-  if(stage==='prompt'||stage==='revision')try{validateShot(store,p,{...p.shots.find(s=>s.id===shotId),prompt:result.prompt});}catch(e){warnings.push({shotId,title:p.shots.find(s=>s.id===shotId).title,message:e.message});}
-  if(stage==='spatial')for(const item of result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
+  if(stage==='prompt'||stage==='revision')try{validateShot(store,p,{...p.shots.find(s=>s.id===shotId),prompt:result.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId,title:p.shots.find(s=>s.id===shotId).title,message:e.message});}
+  if(stage==='spatial')for(const item of result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
   return {result,provenance:{...provenance,warnings}};
 }

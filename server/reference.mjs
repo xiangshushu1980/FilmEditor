@@ -65,13 +65,13 @@ export function inventory(store,p) {
     return {...e,snapshotId:s.id,snapshotVersion:s.version,assets:e.assets.filter(a=>s.assets[a.assetId]).map(a=>({...a,localHash:s.assets[a.assetId].hash}))};
   });
 }
-export function bindings(store,p,shot) {
+export function bindings(store,p,shot,{allowHistoricalAnchor=false}={}) {
   const entities=inventory(store,p).filter(e=>shot.entityIds.includes(e.entityId));
   const assets=entities.flatMap(e=>e.assets);
   const images=shot.imageAssetIds.map(assetId=>{
     const a=assets.find(a=>a.assetId===assetId&&a.mediaType==='image');if(!a)fail('镜头引用图不属于当前快照中的已选实体');return a;
   });
-  const anchor=anchorAsset(store,p,shot);if(anchor)images.push(anchor);
+  const anchor=anchorAsset(store,p,shot,{allowHistorical:allowHistoricalAnchor});if(anchor)images.push(anchor);
   if(images.length>12)fail('含衔接参考帧最多使用12张图片');
   const audio=shot.nativeAudioAssetId?assets.find(a=>a.assetId===shot.nativeAudioAssetId&&a.mediaType==='audio'):null;
   if(shot.nativeAudioAssetId&&!audio)fail('锁定声音不存在于当前实体快照');

@@ -7,13 +7,16 @@ import {join} from 'node:path';
 import {id,now,fail,hash,shotHash} from './store.mjs';
 import {mediaTool} from './render.mjs';
 const exec=promisify(execFile);
-export function anchorAsset(store,p,shot){
+export function anchorAsset(store,p,shot,{allowHistorical=false}={}){
   const a=p.visualAnchors?.[shot.id];if(!a)return null;
   const index=p.shots.findIndex(s=>s.id===shot.id),source=p.shots[index-1];
   const candidate=store.candidates(p.id).find(c=>c.id===a.sourceCandidateId);
-  if(!source||source.id!==a.sourceShotId||!candidate||candidate.shotId!==source.id||candidate.status!=='succeeded'||candidate.media?.hash!==a.sourceMediaHash||candidate.input.shotHash!==a.sourceInputHash||shotHash(p,source)!==a.sourceInputHash||source.selectedCandidateId&&source.selectedCandidateId!==candidate.id)fail('衔接参考帧来源已变化，请重新选取前一镜候选的尾帧',409);
+  const intact=!!candidate&&candidate.projectId===p.id&&candidate.shotId===a.sourceShotId&&candidate.status==='succeeded'&&candidate.media?.hash===a.sourceMediaHash&&candidate.input?.shotHash===a.sourceInputHash;
+  if(!intact)fail('衔接参考帧历史来源或项目归属无效',409);
+  const current=!!source&&source.id===a.sourceShotId&&shotHash(p,source)===a.sourceInputHash&&(!source.selectedCandidateId||source.selectedCandidateId===candidate.id);
+  if(!current&&!allowHistorical)fail('衔接参考帧来源已变化，请重新选取前一镜候选的尾帧',409);
   if(hash(store.read(a.localHash))!==a.localHash)fail('衔接参考帧字节损坏',409);
-  return {assetId:a.id,entityId:null,role:'continuity_frame',mediaType:'image',mime:'image/png',localHash:a.localHash,provenance:a};
+  return {assetId:a.id,entityId:null,role:'continuity_frame',mediaType:'image',mime:'image/png',localHash:a.localHash,provenance:{...a,isCurrent:current,historical:!current}};
 }
 export async function setVisualAnchor(store,projectId,revision,shotId,candidateId){
   const p=store.get(projectId);if(p.revision!==revision)fail('项目已更新',409);
