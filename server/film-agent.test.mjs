@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
-import {Store,id,now,promptSourceHash,generationStatus} from './store.mjs';
+import {Store,id,now,promptSourceHash,generationStatus,shotHash} from './store.mjs';
 import {createFilmAgent} from './film-agent.mjs';
 const pause=()=>new Promise(r=>setTimeout(r,5));
 function fixture(program,{localInference=false}={}){const directory=mkdtempSync(join(tmpdir(),'sean-agent-test-')),store=new Store(directory);const p={owner:'Sean',id:id(),title:'test',revision:0,createdAt:now(),plot:'完整故事',script:'原稿',dialogue:'',shots:[],entities:{},settings:{llm:{model:'test'},targetDurationSec:10,render:{width:1024,height:576}},approval:null,cutStale:true};store.save(p);let videoCalls=0,workflowCalls=0;
@@ -41,4 +41,31 @@ test('adopting unchanged prompt bytes records the latest input version',async()=
   f.store.edit(f.p.id,first.revision,p=>{p.shots[0].seed=2;});assert.equal(generationStatus(f.store.get(f.p.id)).prompts[0].status,'stale');
   const {s}=await begin(f);const result=await finish(f.service,s.id);assert.equal(result.runs[0].status,'succeeded');const next=f.store.get(f.p.id);assert.equal(next.shots[0].prompt,prompt);assert.equal(next.shots[0].seed,2);assert.equal(generationStatus(next).prompts[0].status,'ready');assert.ok(result.proposals[0].appliedAt);
  }finally{f.close();}
+});
+
+// Owner: Sean — structural proposals retain evidence and account for timing before adoption.
+test('shot structure proposal splits atomically, preserves unchanged selection, and rejects unsafe drafts',async()=>{
+ const f=fixture(async({invoke,p,store})=>{
+  const entityId=id(),assetId=id(),snapshotId=id(),imageHash=store.bytes(Buffer.from('fixture image'));
+  store.snapshot({owner:'Sean',id:snapshotId,projectId:p.id,version:1,manifest:{entities:[{entityId,name:'A',assets:[{assetId,entityId,role:'main_appearance',mediaType:'image',mime:'image/png'}]}],relations:[]},assets:{[assetId]:{hash:imageHash}}});
+  const spec=()=>({id:id(),title:'one action',durationSec:4,entityIds:[entityId],imageAssetIds:[assetId],action:'remove coat',framing:'medium',camera:'static',continuity:'same room',dialogue:[],prompt:'',seed:1,nativeAudioAssetId:null,verifiedAudioTranscript:''});
+  let state=store.edit(p.id,p.revision,v=>{v.entities={[entityId]:{name:'A',snapshotId,sourceRevision:'test'}};v.shots=[spec(),spec()];});
+  const candidateId=id(),removedId=state.shots[1].id,removedCandidateId=id();
+  store.candidate({id:removedCandidateId,projectId:p.id,shotId:removedId,status:'succeeded',input:{shot:state.shots[1],shotHash:shotHash(state,state.shots[1])},media:{hash:'retained removed evidence'}});
+  store.candidate({id:candidateId,projectId:p.id,shotId:state.shots[0].id,status:'succeeded',input:{shot:state.shots[0],shotHash:shotHash(state,state.shots[0])},media:{hash:'retained'}});
+  state=store.edit(p.id,state.revision,v=>{v.shots[0].selectedCandidateId=candidateId;v.shots[0].stale=false;});
+  let c=await invoke('get_film_context');const second={...c.shots[1]};
+  const clean=s=>Object.fromEntries(Object.entries(s).filter(([k])=>!['promptStatus','binding','selectedCandidateId'].includes(k)));
+  const first=clean(c.shots[0]),a={...clean(second),action:'remove coat and hold'},b={...spec(),action:'place held coat'};
+  const patch={summary:'split removal and placement',shots:[first,a,b]};
+  const dup=await invoke('propose_film_revision',{revision:c.revision,patch:{...patch,shots:[first,first]}});assert.equal(dup.validation.valid,false);
+  const bad=await invoke('propose_film_revision',{revision:c.revision,patch:{...patch,shots:[first,{...a,entityIds:[id()]}]}});assert.equal(bad.validation.valid,false);
+  const v=await invoke('propose_film_revision',{revision:c.revision,patch});assert.equal(v.validation.valid,true);assert.deepEqual(v.validation.timing,{previousPlannedSec:8,plannedSec:12,targetSec:10,deltaSec:2});assert.equal(v.validation.incompletePromptShotIds.length,3);
+  const jobId=id();store.job({id:jobId,projectId:p.id,status:'running',kind:'shots'});
+  assert.equal((await invoke('apply_film_proposal',{revision:c.revision,proposalId:v.proposalId})).status,409);assert.equal(store.get(p.id).shots.length,2);
+  store.job({id:jobId,projectId:p.id,status:'failed',kind:'shots'});
+  const applied=await invoke('apply_film_proposal',{revision:c.revision,proposalId:v.proposalId});assert.equal(applied.revision,c.revision+1);
+  state=store.get(p.id);assert.equal(state.shots.length,3);assert.equal(state.shots[0].selectedCandidateId,candidateId);assert.equal(state.shots[1].selectedCandidateId,null);assert.equal(state.shots[2].stale,true);assert.equal(store.candidates(p.id).length,2);
+  c=await invoke('get_film_context');const remove=await invoke('propose_film_revision',{revision:c.revision,patch:{summary:'remove active shot only',shots:[clean(c.shots[0]),clean(c.shots[2])]}});await invoke('apply_film_proposal',{revision:c.revision,proposalId:remove.proposalId});assert.equal(store.get(p.id).shots.some(s=>s.id===removedId),false);assert.ok(store.candidates(p.id).some(c=>c.id===removedCandidateId&&c.shotId===removedId));
+ });try{const {s}=await begin(f);const d=await finish(f.service,s.id);assert.equal(d.runs[0].status,'succeeded');assert.ok(f.store.planningVersions(f.p.id).some(v=>v.content.shots.length===3));assert.equal(f.counts().videoCalls,0);}finally{f.close();}
 });

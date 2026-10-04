@@ -22,7 +22,7 @@ export function applySpatialPlan(store,p,result,validateShot) {
   const before=new Map(p.shots.map(s=>[s.id,shotHash(p,s)]));
   const previous=p.spatialPlan;
   const states=result.shots.map(({id,startState,endState,transitionFromPrevious})=>({id,startState,endState,transitionFromPrevious}));
-  const sameSpace=previous&&fingerprint({scenePlan:previous.scenePlan,shots:previous.shots})===fingerprint({scenePlan:result.scenePlan,shots:states});
+  const sameSpace=previous&&fingerprint(previous.scenePlan)===fingerprint(result.scenePlan);
   const next=p.shots.map((s,i)=>({...s,framing:result.shots[i].framing,continuity:result.shots[i].continuity,prompt:result.shots[i].prompt}));
   // Validate text against the evidence it was drafted from. Applying new upstream
   // blocking then invalidates downstream anchors; it must not prevent text adoption.

@@ -40,6 +40,15 @@ test('equivalent space revalidation preserves rendered prefix and still rejects 
   assert.equal(generationStatus(before).prompts[2].status,'ready');
   // A subsequent equivalent adoption must retain the original render provenance.
   applySpatialPlan(store,before,result,()=>{});assert.deepEqual(before.shots.slice(0,2).map(s=>shotHash(before,s)),prefix);
+  const extra={...before.shots[2],id:id(),selectedCandidateId:null};before.shots.push(extra);
+  result.shots.push({...result.shots[2],id:extra.id});
+  applySpatialPlan(store,before,result,()=>{});
+  assert.deepEqual(before.shots.slice(0,2).map(s=>shotHash(before,s)),prefix);
+  assert.equal(before.shots[1].selectedCandidateId,c2.id);
+  result.shots[1].endState='standing';applySpatialPlan(store,before,result,()=>{});
+  assert.equal(shotHash(before,before.shots[0]),prefix[0]);
+  assert.notEqual(shotHash(before,before.shots[1]),prefix[1]);
+  assert.equal(generationStatus(before).anchors[0].status,'stale');
   result.scenePlan='changed actual room';applySpatialPlan(store,before,result,()=>{});
   assert.notEqual(shotHash(before,before.shots[1]),prefix[1]);
   assert.equal(before.shots[1].selectedCandidateId,null);assert.equal(generationStatus(before).anchors[0].status,'stale');
