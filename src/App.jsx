@@ -140,6 +140,8 @@ export default function App() {
   const currentSpatialProposal=[...(p?.jobs||[])].reverse().find(j=>j.kind==='spatial'&&j.status==='succeeded'&&!j.appliedAt&&j.inputRevision===p?.revision);
   const runningPlan=p?.jobs?.find(j=>['script','shots','prompt','revision','spatial'].includes(j.kind)&&j.status==='running');
   const openSpatial=()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob('');setModal('spatial');};
+  // Owner: Sean — expose the assistant from the main toolbar and reveal its panel.
+  const openAgent=()=>{const panel=document.getElementById('film-agent');if(!panel)return;panel.open=true;panel.scrollIntoView({behavior:'smooth',block:'start'});};
   const goTo=id=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
   const navigateStage=stage=>{setWorkflowStage(stage);if(stage==='script'){goTo('script-stage');return;}if(stage==='shots'){setTab('edit');goTo('shotlist-stage');return;}setTab('history');goTo('video-stage');};
   let nextStep={title:'可以按镜头生成视频',detail:'点击生成视频会保存当前修改、校验本镜输入并记录版本；其他镜头可稍后继续制作。',button:'前往本镜视频生成',run:()=>{setWorkflowStage('video');setTab('history');goTo('shot-inspector');}};
@@ -151,7 +153,7 @@ export default function App() {
   else if(!config?.enableGpu)nextStep={title:'视频生成尚未启用',detail:'宿主未启用 GPU 生成，请检查运行配置。',button:'查看接口与参数',run:()=>setModal('settings')};
   else if(config?.activeCandidateId)nextStep={title:'视频正在生成或恢复',detail:`${config.activeGeneration?.shotTitle||'其他镜头'}正在占用生成通道，结束后可提交下一镜。`,button:'查看生成状态',run:()=>{setTab('history');goTo('shot-inspector');}};
   return <>
-    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-agent" onClick={openAgent}>制作助手</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
     {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
     {(error||message||busy)&&<div className={`notice ${error?'error':''}`} role="status"><span>{error||busy||message}</span>{!busy&&<button className="quiet" onClick={()=>{setError('');setMessage('');}}>关闭</button>}</div>}
     <main className="workspace">
