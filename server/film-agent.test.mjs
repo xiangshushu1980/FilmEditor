@@ -44,6 +44,23 @@ test('adopting unchanged prompt bytes records the latest input version',async()=
 });
 
 // Owner: Sean — structural proposals retain evidence and account for timing before adoption.
+test('current spatial draft keeps live prompts and scoped adoption rejects unrelated historical text',async()=>{
+ const f=fixture(async({invoke,p,store})=>{
+  const entityId=id(),assetId=id(),snapshotId=id(),imageHash=store.bytes(Buffer.from('fixture image'));
+  store.snapshot({owner:'Sean',id:snapshotId,projectId:p.id,version:1,manifest:{entities:[{entityId,name:'A',assets:[{assetId,entityId,role:'main_appearance',mediaType:'image',mime:'image/png'}]}],relations:[]},assets:{[assetId]:{hash:imageHash}}});
+  const prompt=`subject_definitions:\n<Subject 1> is A from <Picture 1>.\nsummary:\n[reference generation] A sits.\nretention_analysis:\n<Subject 1>: fully_preserved - identity.\ndetailed_description:\nA realistic indoor scene. [Shot 1] ${'Room table light. '.repeat(120)}\noverall_soundscape:\nRoom tone.\nnon_diegetic_music:\nN/A`;
+  const shot=()=>({id:id(),title:'sit',durationSec:4,entityIds:[entityId],imageAssetIds:[assetId],action:'sit',framing:'medium',camera:'static',continuity:'same room',dialogue:[],prompt,seed:1,nativeAudioAssetId:null,verifiedAudioTranscript:''});
+  let state=store.edit(p.id,p.revision,v=>{v.entities={[entityId]:{name:'A',snapshotId,sourceRevision:'test'}};v.shots=[shot(),shot()];v.spatialPlan={scenePlan:'Same library',questions:[],shots:v.shots.map(s=>({id:s.id,framing:s.framing,continuity:s.continuity,startState:'A seated',endState:'A seated',transitionFromPrevious:'same room',prompt:s.prompt,changes:[]}))};});
+  state=store.edit(p.id,state.revision,v=>{v.shots[0].prompt=prompt.replace('Room tone.','Quiet room tone.');});
+  const live=await invoke('get_current_spatial_plan');assert.equal(live.draft.shots[0].prompt,state.shots[0].prompt);assert.notEqual(live.draft.shots[0].prompt,state.spatialPlan.shots[0].prompt);assert.equal(live.spatialStale,true);
+  const patch={summary:'revise second shot only',shotId:state.shots[1].id,spatial:structuredClone(live.draft)};patch.spatial.shots[1].endState='A remains seated and looks left';
+  const bad=structuredClone(patch);bad.spatial.shots[0].prompt=state.spatialPlan.shots[0].prompt;
+  const rejected=await invoke('propose_film_revision',{revision:state.revision,patch:bad});assert.equal(rejected.validation.valid,false);assert.ok(rejected.validation.warnings.some(w=>w.message.includes('范围外镜头')));
+  assert.equal((await invoke('apply_film_proposal',{revision:state.revision,proposalId:rejected.proposalId})).status,400);assert.equal(store.get(p.id).revision,state.revision);
+  const proposed=await invoke('propose_film_revision',{revision:state.revision,patch});assert.equal(proposed.validation.valid,true,JSON.stringify(proposed.validation));await invoke('apply_film_proposal',{revision:state.revision,proposalId:proposed.proposalId});
+  const next=store.get(p.id);assert.equal(next.shots[0].prompt,state.shots[0].prompt);assert.equal(next.spatialPlan.shots[1].endState,patch.spatial.shots[1].endState);
+ });try{const {s}=await begin(f);const result=await finish(f.service,s.id);assert.equal(result.runs[0].status,'succeeded',result.runs[0].error);}finally{f.close();}
+});
 test('shot structure proposal splits atomically, preserves unchanged selection, and rejects unsafe drafts',async()=>{
  const f=fixture(async({invoke,p,store})=>{
   const entityId=id(),assetId=id(),snapshotId=id(),imageHash=store.bytes(Buffer.from('fixture image'));
