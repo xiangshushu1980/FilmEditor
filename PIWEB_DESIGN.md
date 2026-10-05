@@ -1,13 +1,13 @@
 # [Sean] 短片制作工具与 PiWeb 接入设计
 
 Owner: Sean。日期：2026-10-05。任务：`remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1`。
-状态：设计评审稿，等待用户确认；本文描述的接入尚未实施。
+状态：用户已确认开始实施；随后明确与 Hivemind 无关，仅依赖 PI/PiWeb 与远程 Task Center。实施进度见 PIWEB_IMPLEMENTATION.md。
 
 ## 1. 目标与决定
 
 直接使用 PiWeb 提供制作对话，短片工具继续提供固定流程、内容编辑、素材与生成状态。简单生成可以在工具中直接开始；需要解释、反馈修订、方法改进时进入同一影片的 PiWeb 对话。Agent 的主要职责是协助制作，代码诊断是补充能力。
 
-建议确认以下决定：
+已确认的决定：
 
 1. 制作工作区独立于工具源码仓库；影片 UUID 是内容归属的唯一标识。
 2. 每部影片可以有多个对话，一个制作任务同时只有一个控制对话；其他对话可讨论和只读诊断。
@@ -31,17 +31,17 @@ Owner: Sean。日期：2026-10-05。任务：`remote-92ecb0d7-d1db-4bd5-8a3e-837
 | 关联脱敏日志与程序修订提案 | 复用；源码诊断按需加载，程序修改走独立维护范围 |
 | 内嵌 PI runtime 关闭 skills/context/extensions，使用内存会话 | 外部 PiWeb 使用标准宿主资源与会话；不伪造历史 sessionId |
 
-主要修改 `film-editor/server/` 的上下文、绑定与业务边界，新增 CLI、PI 扩展、制作 skills 和工作区初始化，前端增加对话入口及权限/失败提示。Hivemind 只在宿主启动契约确实缺少绑定能力时做最小适配。实体创建 Agent 的实现不在本次范围。
+主要修改 `film-editor/server/` 的上下文、绑定与业务边界，新增 CLI、PI 扩展、制作 skills 和工作区初始化，前端增加对话入口及权限/失败提示。PI/PiWeb 使用自身会话机制；短片工具自行管理绑定和入口，不调用或修改 Hivemind。实体创建 Agent 的实现不在本次范围。
 
-调查依据：[工作流现行契约](WORKFLOW_IMPROVEMENT.md)、`server/film-agent.mjs`、`server/pi-agent-runtime.mjs`、`server/agent-skills.mjs`、`server/diagnostics.mjs`，以及 Hivemind 的 `docs/coordinator.md`、`docs/inherit.md`、`server/lib/piweb.js`、`server/lib/projects.js`。
+调查依据：[工作流现行契约](WORKFLOW_IMPROVEMENT.md)、`server/film-agent.mjs`、`server/pi-agent-runtime.mjs`、`server/agent-skills.mjs`、`server/diagnostics.mjs`。远程任务契约以当前 Task Center CLI/Coordinator 为准。
 
-重要未决：Hivemind 现行文档要求远程 Coordinator 控制权，但索引返回的 `/api/open` 实现仍包含本地 registry/TODO 接力逻辑。实施第一步核对实际运行入口和源码版本；不能直接复用旧接力语义。当前 Task Center 的会话类型首次绑定后不能切换，因此本次 Codex 开发任务不得直接交给 PI 作为影片制作任务。
+接入边界：用户已明确不依赖 Hivemind，因此不采用其 `/api/open`、项目目录扫描或本地接力逻辑。使用 PI 原生扩展加载及真实 sessionId，对话入口由短片工具直接接入配置的 PiWeb。Task Center 的会话类型首次绑定后不能切换，本次 Codex 开发任务不得直接作为 PI 影片制作任务。
 
 ## 3. 项目、影片、任务的归属
 
 区分四个对象：工具仓库 `comfy-ops`；制作项目目录；影片 `filmProjectId`；远程执行任务 `taskId`。标题只用于显示，重命名不改变绑定。数据库实例还需持久化 `instanceId`，避免 4190 与测试实例碰巧使用相同影片 ID 时串片。
 
-建议默认创建 `~/projects/film-production/` 作为制作项目，影片存放在 `films/<filmProjectId>/`，PI 对话 cwd 为该影片目录。现有 Hivemind 只扫描 `~/projects` 的直接子目录，故项目列表显示制作项目，影片和对话列表由短片工具管理；不把每部影片注册为源码项目。用户也可以选已有制作项目目录，但必须显式绑定、验证路径与继承的 AGENTS。
+建议默认创建 `~/projects/film-production/` 作为制作项目，影片存放在 `films/<filmProjectId>/`，PI 对话 cwd 为该影片目录。影片和对话列表由短片工具管理，PI cwd 绑定影片目录，不依赖任何其他项目注册表。用户也可以选已有制作项目目录，但必须显式绑定、验证路径与继承的 AGENTS。
 
 ```text
 film-production/
@@ -69,7 +69,7 @@ film-production/
 
 新增持久化会话关联：`film_session_links(instanceId, filmProjectId, taskId, piSessionId, purpose, createdAt, launchOperationId)`。会话标题和 cwd 不能替代关联记录；对话不能静默换片，需新绑定/新开并显示目标。
 
-用户入口提供“继续对话”“新讨论”“接管制作”。继续只打开已有深链；新讨论不改变控制权；接管必须走 Coordinator 的显式 handoff，并检查旧控制对话已 checkpoint/允许交接。首次制作对话由宿主创建和绑定、Agent 按当前任务协议 claim。普通 Agent 不调用 Hivemind/PiWeb 会话启动 API。
+用户入口提供“继续对话”“新讨论”“接管制作”。继续只打开已有深链；新讨论不改变控制权；接管必须走 Coordinator 的显式 handoff，并检查旧控制对话已 checkpoint/允许交接。首次制作对话由宿主创建和绑定、Agent 按当前任务协议 claim。普通 Agent 不启动宿主会话，创建新对话由用户在编辑器入口发起；PI 仅使用工具已有会话。
 
 PI 扩展从真实宿主 sessionId 建立会话身份，不能让模型凭任意 JSON 字符串冒充另一个对话。初始化绑定后获得受限、可撤销的调用能力，凭据不写入对话/文档。设计是可信本地主机协作边界；不承诺抵御拥有任意 shell 权限的恶意本机用户。
 
@@ -96,7 +96,7 @@ PI 扩展从真实宿主 sessionId 建立会话身份，不能让模型凭任意
 
 渲染、选片、合成、失败恢复先作为入口 skill 的 references，不为每个按钮建 skill。调试使用现有代码能力和按需诊断参考；没有维护请求时不预载整个源码。
 
-用户级自定义 skill 以 `~/.pi/agent/skills` 为规范源，Codex 使用现有软链机制；所有制作项目可发现同一通用 skill。项目级 skill 仅用于经过复用验证的系列风格/专门流程，单片剧情、人物关系和进度放文档/API。全局开关沿用 Hive 机制，不在影片目录伪造全局开关。
+用户级自定义 skill 以 `~/.pi/agent/skills` 为规范源，Codex 使用现有软链机制；所有制作项目可发现同一通用 skill。项目级 skill 仅用于经过复用验证的系列风格/专门流程，单片剧情、人物关系和进度放文档/API。全局资源开关尊重现有 PI 用户配置，不在影片目录伪造全局开关。
 
 先给 PI 资源目录与简短描述，按对话意图读取正文和必要 references；每次业务操作前读取实时状态。新对话启动时读取资料索引，不把全部历史、素材、官方手册和日志塞入系统提示词。每次生成记录实际 skill/source 的内容哈希、方法版本与影片 revision，供排查和回放。PI 的上下文仍可能随长对话增长，需要主动总结和新开；不把按需读取等同于自动卸载或缓存命中。
 
@@ -144,7 +144,7 @@ Task metadata 拟增加命名空间 `filmBinding`，保存 instanceId、filmProj
 
 文档自由编辑不会直接修改数据库中的拍摄本。`exports/` 明确 revision/hash/生成时间，当前内容仍从 API 查询。若用户希望把文档建议应用到内容，走提案、校验、采用流程。创建新的决策版本不覆盖历史证据。
 
-Mem0 沿用实际制作项目的 kebab-case 池；跨项目方法使用 global，comfy-ops 技术经验仍归 comfy-ops。不按每个 UUID 创建记忆池，影片范围通过可支持的标签/字段或正文标识过滤。读取只取少量相关经验，检查证据和条件后使用。记忆服务不可用不阻塞制作；不得靠记忆恢复任务状态或把一次用户效果反馈当作验证过的通用规则。
+Mem0 定向召回为主，按项目、阶段、模型模式和具体问题检索；只在适用的跨项目技术操作召回 global，不在每轮生成时全池召回。Mem0 沿用实际制作项目的 kebab-case 池；跨项目方法使用 global，comfy-ops 技术经验仍归 comfy-ops。不按每个 UUID 创建记忆池，影片范围通过可支持的标签/字段或正文标识过滤。读取只取少量相关经验，检查证据和条件后使用。记忆服务不可用不阻塞制作；不得靠记忆恢复任务状态或把一次用户效果反馈当作验证过的通用规则。
 
 ## 8. 版本、失效与失败恢复
 
@@ -164,6 +164,6 @@ Mem0 沿用实际制作项目的 kebab-case 池；跨项目方法使用 global�
 
 六个用户议题均已有归属：项目与影片绑定见 §3，多对话见 §4，动态 skill 见 §5，CLI 见 §6，任务系统选择与 Mem0/文档见 §7。持久化、版本和失败恢复见 §8。
 
-自审发现并纳入计划的风险：宿主入口与远程协议可能不一致；当前开发任务不能跨类型转成 PI 制作任务；PI 会话身份不能由模型自报；远程 controller 与本地 SQLite 无跨系统原子事务；技能和补充方法不能变成两份基线；旧会话不能无损冒充原生 PI 会话；跨实例绑定和用户同时编辑必须校验。
+自审发现并纳入计划的风险：PI/PiWeb 运行版本与工具 SDK 版本需兼容验证；当前开发任务不能跨类型转成 PI 制作任务；PI 会话身份不能由模型自报；远程 controller 与本地 SQLite 无跨系统原子事务；技能和补充方法不能变成两份基线；旧会话不能无损冒充原生 PI 会话；跨实例绑定和用户同时编辑必须校验。
 
-建议按本文默认设计实施。评审需要确认：独立制作目录、多个对话/一个制作 controller、复用 Task Center、薄 CLI+扩展、四个起步 skill、保留旧助手直到验证通过。具体开发和测试顺序见 [PIWEB_PLAN.md](PIWEB_PLAN.md)。
+用户已确认本文默认设计并要求开始最挑战部分。实施沿用：独立制作目录、多个对话/一个制作 controller、复用 Task Center、薄 CLI+扩展、四个起步 skill、保留旧助手直到验证通过。具体开发和测试顺序见 [PIWEB_PLAN.md](PIWEB_PLAN.md)。

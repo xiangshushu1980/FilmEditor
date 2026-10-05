@@ -11,6 +11,7 @@ import { generateStage, confirmStage, requireStage, shotSchema, validatePlan, va
 import { ComfyAdapter, model } from './comfy.mjs';
 import { assemble } from './render.mjs';
 import { mountFilmAgent } from './film-agent.mjs';
+import {FilmPiBridge,mountPiBridge} from './pi-bridge.mjs';
 import { spatialSchema, applySpatialPlan, checkSpatialShots } from './spatial.mjs';
 import {candidateSamplingInput} from './candidate-input.mjs';
 import {setVisualAnchor,removeVisualAnchor} from './visual-anchors.mjs';
@@ -100,7 +101,7 @@ app.post('/api/projects/:id/stages/:stage/generate',(req,res)=>{
   const stage=z.enum(['script','shots','prompt','revision','spatial']).parse(req.params.stage),b=z.object({revision:rev,shotId:uuid.optional(),useCurrent:z.boolean().optional(),directorNotes:z.string().max(12000).optional(),spatialNotes:z.string().max(8000).optional(),spatialRevision:z.object({jobId:uuid,draft:spatialSchema}).strict().optional(),feedback:z.object({candidateId:uuid,observed:z.string().trim().min(1).max(8000),desired:z.string().trim().min(1).max(8000)}).strict().optional()}).strict().parse(req.body),projectId=getId(req),p=store.get(projectId);
   res.status(202).json(startPlanning(projectId,stage,b));
 });
-function startPlanning(projectId,stage,b) {
+function startPlanning(projectId,stage,b,{beforeApply,provenance:agentProvenance}={}) {
   const p=store.get(projectId);
   if(p.revision!==b.revision)fail('项目已更新',409);
   ensurePipeline(p);if(b.useCurrent)prepareCurrentInputs(store,p,stage,b.shotId);requireStage(p,stage,b.shotId);
@@ -116,12 +117,13 @@ function startPlanning(projectId,stage,b) {
   }
   const key=`${projectId}:planning`;if(activeJobs.has(key))fail('本项目已有阶段生成正在执行',409);
   const methodSnapshot=new FilmMethods(store).snapshot(projectId);
-  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,method:{contentHash:methodSnapshot.contentHash,versions:methodSnapshot.versions.map(({text,...v})=>v)},content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
+  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,agentProvenance,method:{contentHash:methodSnapshot.contentHash,versions:methodSnapshot.versions.map(({text,...v})=>v)},content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
   activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
   void (async()=>{
     try {
       const {result,provenance}=await generateStage(store,{...config,methodSnapshot},p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes);
       job.result=result;job.response=provenance;store.job(job);
+      if(beforeApply&&!['revision','spatial'].includes(stage))await beforeApply();
       if(!['revision','spatial'].includes(stage))store.edit(projectId,b.revision,current=>{
         if(b.useCurrent&&stage!=='script') {current.pipeline.script=structuredClone(p.pipeline.script);if(stage!=='shots')current.pipeline.shots=structuredClone(p.pipeline.shots);}
         if(stage==='script') {
@@ -284,7 +286,10 @@ app.get('/api/projects/:id/media/:hash',(req,res)=>{
     res.status(206).set('Content-Range',`bytes ${start}-${end}/${content.length}`).send(content.subarray(start,end+1));
   }else res.send(content);
 });
-mountFilmAgent(app,{store,root,config,startPlanning,startCandidate,getGeneration:()=>comfy.activeInfo(),assemble:async(projectId,revision)=>{if(assembling)fail('已有成片正在合成',409);assembling=true;try{await runJob(projectId,revision,'assemble',()=>assemble(store,projectId,revision));return store.view(projectId);}finally{assembling=false;}}});
+let piBridge;
+const filmAgent=mountFilmAgent(app,{store,root,config,startPlanning,startCandidate,authorizeEmbeddedWrite:scope=>piBridge?.assertEmbeddedWrite(scope),getGeneration:()=>comfy.activeInfo(),assemble:async(projectId,revision)=>{if(assembling)fail('已有成片正在合成',409);assembling=true;try{await runJob(projectId,revision,'assemble',()=>assemble(store,projectId,revision));return store.view(projectId);}finally{assembling=false;}}});
+piBridge=new FilmPiBridge({store,agent:filmAgent,apiUrl:`http://127.0.0.1:${process.env.FILM_PORT||4190}`,workspaceBase:process.env.FILM_WORKSPACE_ROOT,piUrl:process.env.FILM_PIWEB_URL||'http://127.0.0.1:30141',piPublicUrl:process.env.FILM_PIWEB_PUBLIC_URL||process.env.FILM_PIWEB_URL||'http://127.0.0.1:30141',extensionPath:path.join(root,'pi/film-extension.mjs')});
+mountPiBridge(app,piBridge);
 app.use('/api',(_req,res)=>res.status(404).json({error:'接口不存在'}));
 if(process.argv.includes('--dev')) {const {createServer}=await import('vite');const vite=await createServer({root,server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
 else {app.use(express.static(path.join(root,'dist')));app.get('/{*path}',(_req,res)=>res.sendFile(path.join(root,'dist/index.html')));}
