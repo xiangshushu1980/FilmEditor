@@ -21,13 +21,14 @@
 .visual-anchor-editor select {width:100%;margin:8px 0}
 .visual-anchor-editor small {display:block;overflow-wrap:anywhere;margin-bottom:8px}
 
-/* Owner: Sean — compact project-side PIWeb connection settings. */
-.film-pi-connection{padding:12px 14px}
-.film-pi-connection>summary{font-weight:600;cursor:pointer}
-.film-pi-connection[open]{display:grid;gap:8px}
-.film-pi-connection .film-pi-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px);gap:12px}
-.film-pi-connection .field{min-width:0;margin:0}
-.film-pi-workspace{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px;align-items:start;color:var(--muted);font-size:12px}
-.film-pi-workspace code{min-width:0;color:inherit;overflow-wrap:anywhere}
-.film-pi-actions{flex-wrap:wrap;margin-top:2px}
-@media(max-width:760px){.film-pi-connection .film-pi-fields{grid-template-columns:1fr}.film-pi-workspace{grid-template-columns:1fr;gap:3px}}
+/* Owner: Sean — compact index of this film's PIWeb conversations. */
+.film-pi-panel{padding:12px 14px}
+.film-pi-heading{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.film-pi-heading h2{margin:0;font-size:14px}
+.film-pi-heading>span{color:var(--muted);font-size:12px}
+.film-pi-list{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+.film-pi-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#0c141c}
+.film-pi-conversation{display:grid;gap:3px;min-width:0}
+.film-pi-conversation strong{font-size:12px}
+.film-pi-conversation small{color:var(--muted);font-size:11px;overflow-wrap:anywhere}
+.film-pi-list a{flex:none;font-size:12px;white-space:nowrap}

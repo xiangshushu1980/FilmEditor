@@ -1,47 +1,56 @@
-// Owner: Sean — keep only project binding and PIWeb entry in the editor.
+// Owner: Sean — index this film's PIWeb conversations, task links, and entry points.
 import React,{useEffect,useState} from 'react';
 
-async function request(projectId,suffix='',body,method='POST'){
-  const response=await fetch(`/api/projects/${projectId}/pi${suffix}`,body?{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});
-  const result=await response.json();
-  if(!response.ok||!result.ok)throw new Error(result.error?.message||'PIWeb 配置失败');
+async function request(projectId){
+  const response=await fetch(`/api/projects/${projectId}/pi`),result=await response.json();
+  if(!response.ok||!result.ok)throw new Error(result.error?.message||'无法读取 PIWeb 对话');
   return result.data;
 }
 
+function sessionUrl(state,session){
+  const launched=(state.launches||[]).find(value=>value.piSessionId===session.piSessionId&&value.url);
+  if(launched)return launched.url;
+  if(!state.piWebUrl)return null;
+  const url=new URL(state.piWebUrl);url.searchParams.set('session',session.piSessionId);return url.toString();
+}
+
+function sessionDate(value){
+  if(!value)return '';
+  const date=new Date(value);
+  return Number.isNaN(date.valueOf())?'':date.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
 export default function FilmPiPanel({project}){
-  const [state,setState]=useState(null),[taskId,setTaskId]=useState(''),[mode,setMode]=useState('discuss'),[busy,setBusy]=useState(false),[error,setError]=useState(''),[launch,setLaunch]=useState(null);
+  const [state,setState]=useState(null),[error,setError]=useState('');
   useEffect(()=>{
-    let live=true;
-    setState(null);setLaunch(null);setError('');
-    request(project.id).then(value=>{if(live){setState(value);setTaskId(value.binding?.taskId||'');setMode(value.binding?.mode||'discuss');}}).catch(e=>{if(live)setError(e.message);});
+    let live=true;setState(null);setError('');
+    request(project.id).then(value=>{if(live)setState(value);}).catch(e=>{if(live)setError(e.message);});
     return()=>{live=false;};
   },[project.id]);
-  const execute=async fn=>{setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}};
-  const latestLaunch=launch?.status==='succeeded'&&launch.url?launch:[...(state?.launches||[])].reverse().find(v=>v.status==='succeeded'&&v.url);
-  const saveBinding=()=>execute(async()=>{
-    const value=await request(project.id,'/binding',{taskId:taskId.trim()||null,mode},'PUT');
-    setState(value);setLaunch(null);
-    window.dispatchEvent(new CustomEvent('film-pi-binding-changed',{detail:{projectId:project.id,state:value}}));
-  });
-  const createSession=()=>execute(async()=>{
-    const value=await request(project.id,'/launch',{idempotencyKey:crypto.randomUUID()});
-    setLaunch(value);setState(await request(project.id));
-  });
-  return <details id="film-pi" className="story-card film-pi-connection">
-    <summary>PIWeb 接入</summary>
+
+  const sessions=(()=>{
+    if(!state)return [];
+    const linked=new Map((state.sessions||[]).filter(value=>value.client==='pi').map(value=>[value.piSessionId,value]));
+    for(const launch of state.launches||[])if(launch.piSessionId&&!linked.has(launch.piSessionId))linked.set(launch.piSessionId,{
+      piSessionId:launch.piSessionId,client:'pi',taskId:launch.bindingVersion===state.binding?.bindingVersion?state.binding?.taskId:null,
+      createdAt:launch.createdAt,launchStatus:launch.status,
+    });
+    return [...linked.values()];
+  })();
+  return <section id="film-pi" className="story-card film-pi-panel">
+    <div className="film-pi-heading"><h2>PIWeb 对话</h2>{sessions.length>0&&<span>{sessions.length}</span>}</div>
     {error&&<p className="error" role="alert">{error}</p>}
-    {!state&&!error&&<p className="muted compact">正在读取项目绑定…</p>}
-    {state&&<>
-      {state.binding&&<div className="film-pi-workspace"><span>影片工作区</span><code title={state.binding.workspaceRoot}>{state.binding.workspaceRoot}</code></div>}
-      <div className="film-pi-fields">
-        <div className="field"><label htmlFor="film-production-task">Task Center 任务 ID</label><input id="film-production-task" value={taskId} onChange={e=>setTaskId(e.target.value)} placeholder="未绑定" disabled={busy}/></div>
-        <div className="field"><label htmlFor="film-pi-mode">允许的操作</label><select id="film-pi-mode" value={mode} onChange={e=>setMode(e.target.value)} disabled={busy}><option value="discuss">只读讨论</option><option value="prepare">文字修订</option><option value="generate">文字与视频操作</option></select></div>
-      </div>
-      <div className="row film-pi-actions">
-        <button disabled={busy} onClick={saveBinding}>{state.binding?'保存绑定':'建立项目工作区'}</button>
-        <button disabled={busy||!state.binding} onClick={createSession}>新建 PIWeb 对话</button>
-        {latestLaunch&&<a href={latestLaunch.url} target="_blank" rel="noreferrer">打开 PIWeb</a>}
-      </div>
-    </>}
-  </details>;
+    {!state&&!error&&<p className="muted compact">正在读取关联…</p>}
+    {state&&sessions.length===0&&<p className="muted compact">当前影片还没有关联的 PIWeb 对话。</p>}
+    {sessions.length>0&&<ul className="film-pi-list">{sessions.map(session=>{
+      const href=sessionUrl(state,session),taskId=session.taskId;
+      return <li key={session.piSessionId}>
+        <div className="film-pi-conversation">
+          <strong>制作对话 · {session.piSessionId.slice(0,8)}</strong>
+          <small>{taskId?`任务 ${taskId}`:'未关联任务'}{session.revokedAt?' · 已撤销':''}{sessionDate(session.connectedAt||session.createdAt)?` · ${sessionDate(session.connectedAt||session.createdAt)}`:''}</small>
+        </div>
+        {href&&<a href={href} target="_blank" rel="noreferrer">跳转 ↗</a>}
+      </li>;
+    })}</ul>}
+  </section>;
 }
