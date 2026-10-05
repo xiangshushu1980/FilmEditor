@@ -1,5 +1,6 @@
 // Owner: Sean — SQLite truth, immutable snapshots/inputs and content-addressed bytes.
 import { DatabaseSync } from 'node:sqlite';
+import {Diagnostics} from './diagnostics.mjs';
 import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -30,6 +31,7 @@ export class Store {
       CREATE TRIGGER IF NOT EXISTS frozen_candidate_input BEFORE UPDATE OF input ON candidates BEGIN SELECT RAISE(ABORT,'immutable candidate input'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_cut_update BEFORE UPDATE ON cuts BEGIN SELECT RAISE(ABORT,'immutable cut'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_cut_delete BEFORE DELETE ON cuts BEGIN SELECT RAISE(ABORT,'immutable cut'); END;`);
+    this.diagnostics=new Diagnostics(this);
   }
   transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try {const r=fn();this.db.exec('COMMIT');return r;} catch(e){this.db.exec('ROLLBACK');throw e;} }
   event(projectId,kind,body) { this.db.prepare('INSERT INTO events(projectId,at,kind,body) VALUES(?,?,?,?)').run(projectId,now(),kind,JSON.stringify(body)); }
@@ -59,10 +61,10 @@ export class Store {
   snapshots(projectId) { return this.db.prepare('SELECT body FROM snapshots WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body)); }
   candidate(c) {this.db.prepare('INSERT INTO candidates VALUES(?,?,?,?)').run(c.id,c.projectId,JSON.stringify(c.input),JSON.stringify(c));this.event(c.projectId,'candidate-created',{candidateId:c.id,parentId:c.parentId});}
   candidates(projectId) {return this.db.prepare('SELECT body FROM candidates WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
-  updateCandidate(c,patch) {Object.assign(c,patch,{updatedAt:now()});this.db.prepare('UPDATE candidates SET body=? WHERE id=?').run(JSON.stringify(c),c.id);this.event(c.projectId,'candidate-status',{id:c.id,status:c.status,error:c.error});}
+  updateCandidate(c,patch) {Object.assign(c,patch,{updatedAt:now()});this.db.prepare('UPDATE candidates SET body=? WHERE id=?').run(JSON.stringify(c),c.id);this.event(c.projectId,'candidate-status',{id:c.id,status:c.status,error:c.error});this.diagnostics.record({projectId:c.projectId,candidateId:c.id,shotId:c.shotId,stage:'video',status:c.status,progress:c.progress,error:c.error});}
   cuts(projectId) {return this.db.prepare('SELECT body FROM cuts WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
   jobs(projectId) {return this.db.prepare('SELECT body FROM jobs WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
-  job(j) {this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(j.id,j.projectId,JSON.stringify(j));this.event(j.projectId,'job-status',{jobId:j.id,kind:j.kind,status:j.status,error:j.error});}
+  job(j) {this.db.prepare('INSERT INTO jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(j.id,j.projectId,JSON.stringify(j));this.event(j.projectId,'job-status',{jobId:j.id,kind:j.kind,status:j.status,error:j.error});this.diagnostics.record({projectId:j.projectId,jobId:j.id,revision:j.input?.revision,stage:j.kind,status:j.status,error:j.error,createdAt:j.createdAt,finishedAt:j.finishedAt,method:j.input?.method});}
   recoverJobs() {for(const p of this.list())for(const j of this.jobs(p.id))if(j.status==='running')this.job({...j,status:'interrupted',finishedAt:now(),error:'服务重启中断；未自动重复调用，请检查项目后手动重试。'});}
   cut(c) {this.db.prepare('INSERT INTO cuts VALUES(?,?,?)').run(c.id,c.projectId,JSON.stringify(c));this.event(c.projectId,'assembled',{cutId:c.id,input:c.input});}
   bytes(bytes,expected) {const h=hash(bytes);if(expected&&h!==expected.replace(/^sha256:/,''))fail('素材 SHA-256 校验失败',409);const dest=path.join(this.blobs,h);if(!existsSync(dest))writeFileSync(dest,bytes,{flag:'wx'});else if(hash(readFileSync(dest))!==h)fail('本地素材损坏',409);return h;}

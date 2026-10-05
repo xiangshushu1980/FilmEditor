@@ -1,5 +1,7 @@
 // Owner: Sean — standalone loopback application; no Reference implementation dependency.
 import express from 'express';
+import {FilmMethods} from './film-methods.mjs';
+import {redact} from './diagnostics.mjs';
 import { z } from 'zod';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +44,7 @@ app.use((req,res,next)=>{
   if(req.headers.origin) {try{if(new URL(req.headers.origin).host!==host)return res.status(403).json({error:'仅允许同源请求'});}catch{return res.status(403).json({error:'Origin 无效'});}}
   res.set('X-Content-Type-Options','nosniff');next();
 });
+app.use('/api',(req,res,next)=>{req.requestId=id();res.set('X-Request-ID',req.requestId);const start=Date.now(),projectId=req.path.match(/^\/projects\/([a-f0-9-]{36})(?:\/|$)/i)?.[1]||null;store.diagnostics.with({requestId:req.requestId,projectId},()=>{res.on('finish',()=>{if(req.method!=='GET'||res.statusCode>=400)store.diagnostics.record({projectId,requestId:req.requestId,stage:'http',route:req.path,method:req.method,revision:req.body?.revision,status:res.statusCode>=400?'failed':'succeeded',httpStatus:res.statusCode,durationMs:Date.now()-start});});next();});});
 app.use('/api',express.json({limit:'3mb'}));
 const rev=z.number().int().nonnegative();
 const uuid=z.string().uuid();
@@ -112,11 +115,12 @@ function startPlanning(projectId,stage,b) {
     checkSpatialShots(p,b.spatialRevision.draft);
   }
   const key=`${projectId}:planning`;if(activeJobs.has(key))fail('本项目已有阶段生成正在执行',409);
-  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
+  const methodSnapshot=new FilmMethods(store).snapshot(projectId);
+  const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,method:{contentHash:methodSnapshot.contentHash,versions:methodSnapshot.versions.map(({text,...v})=>v)},content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
   activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
   void (async()=>{
     try {
-      const {result,provenance}=await generateStage(store,config,p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes);
+      const {result,provenance}=await generateStage(store,{...config,methodSnapshot},p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes);
       job.result=result;job.response=provenance;store.job(job);
       if(!['revision','spatial'].includes(stage))store.edit(projectId,b.revision,current=>{
         if(b.useCurrent&&stage!=='script') {current.pipeline.script=structuredClone(p.pipeline.script);if(stage!=='shots')current.pipeline.shots=structuredClone(p.pipeline.shots);}
@@ -132,7 +136,7 @@ function startPlanning(projectId,stage,b) {
         store.event(projectId,'stage-generated',{stage,jobId:job.id,shotId:job.shotId,responseId:provenance.responseId,model:provenance.model,warnings:provenance.warnings});
       },'pipeline-generated-'+stage);
       store.job({...job,status:'succeeded',finishedAt:now(),output:{revision:store.get(projectId).revision}});
-    }catch(e){store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:e.message});}
+    }catch(e){const diagnosticId=store.diagnostics.error(e,{projectId,jobId:job.id,revision:b.revision,stage});store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:redact(e.message),diagnosticId});}
     finally{activeJobs.delete(key);}
   })();
   return {jobId:job.id,stage,status:'running'};
@@ -284,7 +288,7 @@ mountFilmAgent(app,{store,root,config,startPlanning,startCandidate,getGeneration
 app.use('/api',(_req,res)=>res.status(404).json({error:'接口不存在'}));
 if(process.argv.includes('--dev')) {const {createServer}=await import('vite');const vite=await createServer({root,server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
 else {app.use(express.static(path.join(root,'dist')));app.get('/{*path}',(_req,res)=>res.sendFile(path.join(root,'dist/index.html')));}
-app.use((err,_req,res,_next)=>res.status(err instanceof z.ZodError?400:err.status||500).json({error:err instanceof z.ZodError?'字段校验失败':err.message,details:err instanceof z.ZodError?err.issues:undefined}));
+app.use((err,req,res,_next)=>{const diagnosticId=store.diagnostics.error(err,{requestId:req.requestId,stage:'http-error',route:req.path});res.status(err instanceof z.ZodError?400:err.status||500).json({error:err instanceof z.ZodError?'字段校验失败':redact(err.message),details:err instanceof z.ZodError?redact(err.issues):undefined,requestId:req.requestId,diagnosticId});});
 const port=Number(process.env.FILM_PORT||4190);if(!Number.isInteger(port)||port<1024||port>65535)fail('FILM_PORT 无效');
 const server=app.listen(port,'127.0.0.1',()=>{console.log(`Owner: Sean · Film editor http://127.0.0.1:${port} · GPU ${config.enableGpu?'enabled':'disabled'}`);void comfy.recover().catch(e=>console.error('候选恢复失败:',e.message));});
 server.on('error',error=>{console.error(`短片编辑器启动失败: ${error.message}`);process.exit(1);});
