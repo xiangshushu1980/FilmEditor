@@ -16,7 +16,7 @@ const empty=z.object({}).strict(),modeSchema=z.enum(['discuss','prepare','genera
 // Owner: Sean — historical spatial records must not restore obsolete live prompts.
 function spatialDraft(p){
   const plan=p.spatialPlan;if(!plan)return null;
-  const shots=p.shots.map(s=>{const old=plan.shots.find(v=>v.id===s.id);return old?{...old,framing:s.framing,continuity:s.continuity,prompt:s.prompt}:null;});
+  const shots=p.shots.map(s=>{const old=plan.shots.find(v=>v.id===s.id);return old?{...old,framing:s.framing,continuity:s.continuity,prompt:s.prompt,changes:old.changes||[]}:null;});
   return shots.some(s=>!s)?null:{scenePlan:plan.scenePlan,questions:plan.questions||[],shots};
 }
 const patchSchema=z.object({summary:z.string().trim().min(1).max(4000),script:z.string().trim().min(1).max(40000).optional(),dialogue:z.string().max(40000).optional(),shotId:uuid.optional(),shotChanges:z.object({durationSec:z.number().min(4).max(15).optional(),action:z.string().max(8000).optional(),framing:z.string().max(1000).optional(),camera:z.string().max(1000).optional(),continuity:z.string().max(8000).optional(),prompt:z.string().max(30000).optional()}).strict().optional(),shots:z.array(shotSchema).min(1).max(40).optional(),spatial:spatialSchema.optional()}).strict().refine(x=>(x.shotId&&x.shotChanges)||x.script!==undefined||x.dialogue!==undefined||x.spatial||x.shots,'至少一项修订').refine(x=>!x.spatial||(!x.shotChanges&&x.script===undefined&&x.dialogue===undefined&&!x.shots),'空间提案不能同时改写剧本或动作').refine(x=>!x.shots||(!x.shotChanges&&!x.shotId&&!x.spatial&&x.script===undefined&&x.dialogue===undefined),'镜头结构提案不能混入其他修订');
