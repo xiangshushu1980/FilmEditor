@@ -1,5 +1,4 @@
 // Owner: Sean — one-page review/editor UI, independent of Reference workspace.
-import FilmAgentPanel from './FilmAgentPanel.jsx';
 import FilmPiPanel from './FilmPiPanel.jsx';
 import VisualAnchorEditor from './VisualAnchorEditor.jsx';
 import React,{useState,useEffect,useRef,useId} from 'react';
@@ -141,8 +140,8 @@ export default function App() {
   const currentSpatialProposal=[...(p?.jobs||[])].reverse().find(j=>j.kind==='spatial'&&j.status==='succeeded'&&!j.appliedAt&&j.inputRevision===p?.revision);
   const runningPlan=p?.jobs?.find(j=>['script','shots','prompt','revision','spatial'].includes(j.kind)&&j.status==='running');
   const openSpatial=()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob('');setModal('spatial');};
-  // Owner: Sean — expose the assistant from the main toolbar and reveal its panel.
-  const openAgent=()=>{const panel=document.getElementById('film-pi');if(!panel)return;panel.open=true;panel.scrollIntoView({behavior:'smooth',block:'start'});};
+  // Owner: Sean — reveal project-side PIWeb connection settings.
+  const openPiWeb=()=>{const panel=document.getElementById('film-pi');if(!panel)return;panel.open=true;panel.scrollIntoView({behavior:'smooth',block:'start'});};
   const goTo=id=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
   const navigateStage=stage=>{setWorkflowStage(stage);if(stage==='script'){goTo('script-stage');return;}if(stage==='shots'){setTab('edit');goTo('shotlist-stage');return;}setTab('history');goTo('video-stage');};
   let nextStep={title:'可以按镜头生成视频',detail:'点击生成视频会保存当前修改、校验本镜输入并记录版本；其他镜头可稍后继续制作。',button:'前往本镜视频生成',run:()=>{setWorkflowStage('video');setTab('history');goTo('shot-inspector');}};
@@ -154,7 +153,7 @@ export default function App() {
   else if(!config?.enableGpu)nextStep={title:'视频生成尚未启用',detail:'宿主未启用 GPU 生成，请检查运行配置。',button:'查看接口与参数',run:()=>setModal('settings')};
   else if(config?.activeCandidateId)nextStep={title:'视频正在生成或恢复',detail:`${config.activeGeneration?.shotTitle||'其他镜头'}正在占用生成通道，结束后可提交下一镜。`,button:'查看生成状态',run:()=>{setTab('history');goTo('shot-inspector');}};
   return <>
-    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-pi" onClick={openAgent}>制作助手</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-pi" onClick={openPiWeb}>PIWeb 接入</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
     {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
     {(error||message||busy)&&<div className={`notice ${error?'error':''}`} role="status"><span>{error||busy||message}</span>{!busy&&<button className="quiet" onClick={()=>{setError('');setMessage('');}}>关闭</button>}</div>}
     <main className="workspace">
@@ -176,7 +175,6 @@ export default function App() {
           <section className="story-card workflow-status" aria-label="当前流程状态"><div className="section-head"><h2>{nextStep.title}</h2></div><p>{nextStep.detail}</p><div className="chips"><span className="chip">拍摄安排 · {p.shots.length} 镜</span><span className="chip">提示词 · {p.shots.length-incompletePrompts.length}/{p.shots.length} 可用</span></div>{nextStep.button&&<button className="primary" disabled={!!busy} onClick={nextStep.run}>{nextStep.button}</button>}</section>
           <nav className="workflow-steps" aria-label="短片制作阶段">{[['script','1','剧本与对白',p.script.trim()?'可编辑':'待编写'],['shots','2','拍摄本与提示词',p.shots.length?`${p.shots.length} 镜 · ${p.shots.length-incompletePrompts.length} 镜提示词可用`:'待生成'],['video','3','视频生成与成片',p.cuts.length?`${p.cuts.length} 版成片`:config?.activeCandidateId?'生成中':'按镜头生成']].map(([key,n,name,state])=><button type="button" key={key} className={workflowStage===key?'active':''} aria-current={workflowStage===key?'step':undefined} onClick={()=>navigateStage(key)}><span className="step-number">{n}</span><span><b>{name}</b><small>{state}</small></span></button>)}</nav>
           <FilmPiPanel project={p}/>
-          <FilmAgentPanel project={p} onBeforeSend={savedInput} onRefresh={()=>{if(!interactionRef.current.dirty)void api(`/projects/${p.id}`).then(value=>{if(projectRef.current===value.id)apply(value);}).catch(e=>setError(e.message));}}/>
           <section id="script-stage" className="story-card"><div className="section-head"><h2>1 · 剧本与对白</h2><Badge>{stageStatus('script')==='running'?'生成中':p.script.trim()?'可编辑':'待编写'}</Badge></div>
             <p className="muted compact">写好故事方向后，直接生成拍摄本。生成时保存当前内容，修改和重新生成都保留历史。</p>
             <div className="row"><button disabled={!!busy||planningBusy||!entities.length||!draft?.plot.trim()} onClick={()=>generateStage('script')}>生成剧本与对白 ↗</button></div>

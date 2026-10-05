@@ -20,3 +20,14 @@
 .visual-anchor-image {display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin:10px 0}
 .visual-anchor-editor select {width:100%;margin:8px 0}
 .visual-anchor-editor small {display:block;overflow-wrap:anywhere;margin-bottom:8px}
+
+/* Owner: Sean — compact project-side PIWeb connection settings. */
+.film-pi-connection{padding:12px 14px}
+.film-pi-connection>summary{font-weight:600;cursor:pointer}
+.film-pi-connection[open]{display:grid;gap:8px}
+.film-pi-connection .film-pi-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px);gap:12px}
+.film-pi-connection .field{min-width:0;margin:0}
+.film-pi-workspace{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px;align-items:start;color:var(--muted);font-size:12px}
+.film-pi-workspace code{min-width:0;color:inherit;overflow-wrap:anywhere}
+.film-pi-actions{flex-wrap:wrap;margin-top:2px}
+@media(max-width:760px){.film-pi-connection .film-pi-fields{grid-template-columns:1fr}.film-pi-workspace{grid-template-columns:1fr;gap:3px}}
