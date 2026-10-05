@@ -13,6 +13,7 @@ import { assemble } from './render.mjs';
 import { mountFilmAgent } from './film-agent.mjs';
 import {FilmPiBridge,mountPiBridge} from './pi-bridge.mjs';
 import { spatialSchema, applySpatialPlan, checkSpatialShots } from './spatial.mjs';
+import {validateSpatialReview,saveSpatialReview} from './spatial-review.mjs';
 import {candidateSamplingInput} from './candidate-input.mjs';
 import {setVisualAnchor,removeVisualAnchor} from './visual-anchors.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
@@ -144,20 +145,10 @@ function startPlanning(projectId,stage,b,{beforeApply,provenance:agentProvenance
   return {jobId:job.id,stage,status:'running'};
 }
 // Owner: Sean — review edits remain job drafts until explicit atomic adoption.
-function spatialReview(req) {
-  const projectId=getId(req),p=store.get(projectId),job=store.jobs(projectId).find(j=>j.id===uuid.parse(req.params.jobId));
-  const b=z.object({revision:rev,result:spatialSchema}).strict().parse(req.body);
-  if(!job||job.kind!=='spatial'||job.status!=='succeeded'||job.appliedAt)fail('空间修订稿不可编辑',409);
-  if(p.revision!==b.revision||job.input.revision!==b.revision)fail('项目已改变，请基于当前拍摄本重新生成',409);
-  checkSpatialShots(p,b.result);
-  const warnings=[];
-  for(const item of b.result.shots)try{validateShot(store,p,{...p.shots.find(s=>s.id===item.id),framing:item.framing,continuity:item.continuity,prompt:item.prompt},{allowHistoricalAnchor:true});}catch(e){warnings.push({shotId:item.id,title:p.shots.find(s=>s.id===item.id).title,message:e.message});}
-  return {projectId,job,b,validation:{warnings,questions:b.result.questions,valid:!warnings.length&&!b.result.questions.length}};
-}
+function spatialReview(req){return validateSpatialReview(store,getId(req),uuid.parse(req.params.jobId),req.body);}
 app.post('/api/projects/:id/jobs/:jobId/validate-spatial',(req,res)=>res.json(spatialReview(req).validation));
 app.put('/api/projects/:id/jobs/:jobId/spatial-draft',(req,res)=>{
-  const {job,b,validation}=spatialReview(req);
-  store.job({...job,reviewDraft:b.result,reviewDraftAt:now(),reviewValidation:validation});
+  const {validation}=saveSpatialReview(store,getId(req),uuid.parse(req.params.jobId),req.body,{source:'editor',reviewer:'Sean'});
   res.json(validation);
 });
 app.post('/api/projects/:id/jobs/:jobId/apply-spatial',(req,res)=>{

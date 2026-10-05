@@ -2,6 +2,15 @@
 import http from 'node:http';
 import https from 'node:https';
 
+export function filmRequestDeadline(body) {
+  return body?.tool === 'get_workflow_result' && body.args?.wait === true ? 35_000 : 15_000;
+}
+
+export function filmRequestSignal(body, callerSignal, timeoutSignal = ms => AbortSignal.timeout(ms)) {
+  const deadline = timeoutSignal(filmRequestDeadline(body));
+  return callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
+}
+
 export function loopbackOrigin(value) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash || url.pathname !== '/')

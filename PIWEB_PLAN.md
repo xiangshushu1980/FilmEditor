@@ -63,4 +63,4 @@ P0 是集成门槛，P1 也是其他 Agent 可独立使用的交付点。P2/P3 �
 
 已通过门槛：用户确认设计。P0 核对 PI session 身份、宿主版本与原生项目资源加载。严格跨系统原子 controller fencing 当前不宣称已解决，测试与日志必须揭示实际边界。若需要 Coordinator 新协议支持，应另提交具体设计，而不是在影片工具伪造锁。
 
-最终验收由用户完成。交付附 scoped commits、测试证据、未覆盖项和恢复说明；Task Center 提交 awaiting_acceptance，不由 Agent 自行 complete。
+用户已授权文字类验收由 Agent 执行，可委派 Luna；画面和声音效果仍由用户判断。交付附 scoped commits、测试证据、未覆盖项和恢复说明；符合交付范围时 Task Center 提交 awaiting_acceptance，不由 Agent 自行 complete。

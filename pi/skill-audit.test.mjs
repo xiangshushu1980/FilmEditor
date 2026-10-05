@@ -11,8 +11,11 @@ import {createSkillAuditor,installFilmExtension} from './film-extension.mjs';
 
 const localDist=path.dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const piCommand=spawnSync('which',['pi'],{encoding:'utf8'});
-const globalDist=piCommand.status===0?path.dirname(path.dirname(await realpath(piCommand.stdout.trim()))):null;
-const piwebDist=globalDist?path.join(globalDist,'../../../@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/dist'):null;
+let globalDist=piCommand.status===0?path.dirname(path.dirname(await realpath(piCommand.stdout.trim()))):null;
+// Owner: Sean. The managed launcher is a shell wrapper rather than an SDK entry.
+try{const version=(await readFile(path.join(os.homedir(),'.pi/agent/install/current-version'),'utf8')).trim();if(/^[\w.+-]+$/.test(version))globalDist=path.join(os.homedir(),'.pi/agent/install/releases',version,'node_modules/@earendil-works/pi-coding-agent/dist');}catch{}
+const npmRoot=spawnSync('npm',['root','-g'],{encoding:'utf8'});
+const piwebDist=npmRoot.status===0?path.join(npmRoot.stdout.trim(),'@agegr/pi-web/node_modules/@earendil-works/pi-coding-agent/dist'):null;
 const load=async(dist,file)=>import(pathToFileURL(path.join(dist,file)));
 
 async function fixture(t){

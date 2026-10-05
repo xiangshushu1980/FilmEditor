@@ -3,7 +3,7 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { loopbackFetch } from './loopback-http.mjs';
+import { loopbackFetch, filmRequestSignal } from './loopback-http.mjs';
 
 export const filmParameters = {
   type: 'object', additionalProperties: false,
@@ -48,7 +48,7 @@ class FilmError extends Error {
 }
 
 // Dependencies are injectable for tests; credentials remain in this closure.
-export function createFilmClient({ fetchImpl = loopbackFetch, readFileImpl = readFile, realpathImpl = realpath, env = process.env } = {}) {
+export function createFilmClient({ fetchImpl = loopbackFetch, readFileImpl = readFile, realpathImpl = realpath, env = process.env, timeoutSignal } = {}) {
   let current, pending;
   const sourceQueue = new Map();
   const secrets = new Set();
@@ -63,14 +63,19 @@ export function createFilmClient({ fetchImpl = loopbackFetch, readFileImpl = rea
     return value;
   };
   async function request(apiUrl, route, { token, body, signal } = {}) {
+    const requestSignal = filmRequestSignal(body, signal, timeoutSignal);
     let response;
     try {
       response = await fetchImpl(`${apiUrl}${route}`, { method: body === undefined ? 'GET' : 'POST', redirect: 'error',
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+        signal: requestSignal,
         headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(token ? { authorization: `Bearer ${token}` } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    } catch { throw new FilmError('FILM_UNREACHABLE', 'Film API request failed; retry after checking the binding and service.', true); }
+    } catch {
+      if (signal?.aborted) throw new FilmError('FILM_CANCELLED', 'The request was cancelled; existing film jobs may continue. Query the same job before resubmitting work.');
+      if (requestSignal.aborted) throw new FilmError('FILM_TIMEOUT', 'The request deadline elapsed; this does not mean the film job failed or the service is offline. Query the same job ID before resubmitting work.', true);
+      throw new FilmError('FILM_UNREACHABLE', 'Film API request failed; retry after checking the binding and service.', true);
+    }
     let value;
     try { value = await response.json(); } catch { throw new FilmError('FILM_PROTOCOL', 'Film API returned invalid JSON.'); }
     if (!response.ok || value?.ok === false) {
@@ -249,7 +254,7 @@ export function installFilmExtension(pi, options) {
     try {
       await auditor.command(event, ctx);
       const binding = await client.summary(ctx);
-      content = `Film binding: instance ${binding.instanceId}, film ${binding.filmProjectId}, version ${binding.bindingVersion}. Use film with tool="catalog" and args={} to discover API tools, then read live context. Credentials and session identity are managed by the extension. Task Center decides write control; ${binding.taskId ? `inspect task-center info ${binding.taskId} for current controller/generation and checkpoints` : 'without a linked production task only discuss/read'}. Do not automatically claim, hand off or create tasks. Load relevant skills and mode references on demand. If film tools are unavailable, stop and report the binding/service failure. Do not read bootstrap credentials, fabricate sessions, or bypass the extension with shell/raw API calls; troubleshoot only when the user explicitly requests diagnosis.`;
+      content = `Film binding: instance ${binding.instanceId}, film ${binding.filmProjectId}, version ${binding.bindingVersion}. Use film with tool="catalog" and args={} to discover API tools, then read live context. Credentials and session identity are managed by the extension. Task Center decides write control; ${binding.taskId ? `inspect task-center info ${binding.taskId} for current controller/generation and checkpoints` : 'without a linked production task only discuss/read'}. Do not automatically claim, hand off or create tasks. Load relevant skills and mode references on demand. get_workflow_result with wait:true may poll for 20 seconds; its request deadline is 35 seconds. Polling timeout/cancellation does not mean the job failed; query the same job ID and do not resubmit generation. If film tools are unavailable, stop and report the binding/service failure. Do not read bootstrap credentials, fabricate sessions, or bypass the extension with shell/raw API calls; troubleshoot only when the user explicitly requests diagnosis.`;
     } catch (error) { content = `Film tools unavailable: ${client.error(error).error.message} Stop film operations and report this failure. Do not read .film/bootstrap.json, expose credentials, invent session IDs, or attempt shell/raw API workarounds. Do not diagnose or change the service unless the user explicitly requests it.`; }
     // PI 0.86+ patches sections; PiWeb's 0.84 uses the supported string return.
     if (event.systemPromptOptions?.sections) { event.systemPromptOptions.sections.film_binding = content; return; }

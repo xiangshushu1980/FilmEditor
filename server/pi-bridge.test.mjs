@@ -68,6 +68,20 @@ test('current controller and generation are checked before every persisted write
   }finally{f.close();}
 });
 
+test('readable task state uses the same generation, type, identity and film rules as write authorization',async()=>{
+  const f=fixture();try{
+    await f.configure();await f.connect();await f.observe();await f.propose();
+    for(const change of [{controllerGeneration:2},{piSessionId:id()},{codexThreadId:id()},{metadata:{filmBinding:{instanceId:id(),filmProjectId:f.p.id}}}]){
+      const original=structuredClone(f.task());f.setTask(change);
+      const context=f.value(await f.observe());assert.equal(context.taskState.canWrite,false);assert.ok(context.taskState.writeBlocker.code);
+      await assert.rejects(f.propose('forbidden'),e=>e.code===context.taskState.writeBlocker.code);
+      f.setTask({...original,codexThreadId:original.codexThreadId||null});
+    }
+    assert.equal(f.value(await f.observe()).taskState.canWrite,true);
+    assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM film_agent_proposals').get().n,1);
+  }finally{f.close();}
+});
+
 test('human edits reject old proposal adoption and caller revision claims do not replace observation',async()=>{
   const f=fixture();try{
     await f.configure();await f.connect();await assert.rejects(f.propose(),e=>['REVISION_CONFLICT','CONTEXT_REQUIRED'].includes(e.code));await f.observe();const proposalId=f.value(await f.propose()).proposalId;

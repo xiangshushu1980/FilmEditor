@@ -14,11 +14,11 @@ export default function FilmPiPanel({project}){
     {state&&<>
       <div className="field"><label htmlFor="film-production-task">远程制作任务（讨论时可留空）</label><input id="film-production-task" value={taskId} onChange={e=>setTaskId(e.target.value)} placeholder="remote-…" disabled={busy}/></div>
       <div className="field"><label htmlFor="film-pi-mode">对话权限</label><select id="film-pi-mode" value={mode} onChange={e=>setMode(e.target.value)} disabled={busy}><option value="discuss">讨论与查看</option><option value="prepare">允许文字修订</option><option value="generate">允许文字与视频操作</option></select></div>
-      <div className="actions"><button disabled={busy} onClick={()=>execute(async()=>{const value=await request(project.id,'/binding',{taskId:taskId.trim()||null,mode},'PUT');setState(value);setLaunch(null);})}>{state.binding?'保存对话设置':'建立制作工作区'}</button><button disabled={busy||!state.binding} title={!state.binding?'先建立制作工作区':'在配置的 PiWeb 创建新对话'} onClick={()=>execute(async()=>{const value=await request(project.id,'/launch',{idempotencyKey:crypto.randomUUID()});setLaunch(value);setState(await request(project.id));})}>新建 PI 对话</button></div>
+      <div className="actions"><button disabled={busy} onClick={()=>execute(async()=>{const value=await request(project.id,'/binding',{taskId:taskId.trim()||null,mode},'PUT');setState(value);setLaunch(null);window.dispatchEvent(new CustomEvent('film-pi-binding-changed',{detail:{projectId:project.id,state:value}}));})}>{state.binding?'保存对话设置':'建立制作工作区'}</button><button disabled={busy||!state.binding} title={!state.binding?'先建立制作工作区':'在配置的 PiWeb 创建新对话'} onClick={()=>execute(async()=>{const value=await request(project.id,'/launch',{idempotencyKey:crypto.randomUUID()});setLaunch(value);setState(await request(project.id));})}>新建 PI 对话</button></div>
       {state.binding&&<p>工作区：<code>{state.binding.workspaceRoot}</code><br/>{state.binding.taskId?'写入时核对 Task Center 控制权；其他对话可查看。':'当前仅讨论；允许修订前需绑定 PI 制作任务。'}</p>}
       {known.length>0&&<ul>{known.map(v=><li key={v.piSessionId}><a href={v.url} target="_blank" rel="noreferrer">继续 PI 对话</a> <small>{v.piSessionId.slice(0,8)}</small></li>)}</ul>}
       {state.sessions.filter(s=>s.client!=='cli').length>0&&<p>已关联 {state.sessions.filter(s=>s.client!=='cli').length} 个对话，历史保留。接管控制权通过 Task Center 显式交接。</p>}
-      <p><small>PiWeb 不可用时可继续使用下方旧助手和固定流程。此接入不依赖 Hivemind。</small></p>
+      <p><small>未绑定任务时可使用旧兼容助手；绑定后旧助手只读历史，固定编辑流程仍可使用。此接入不依赖 Hivemind。</small></p>
     </>}
   </details>;
 }

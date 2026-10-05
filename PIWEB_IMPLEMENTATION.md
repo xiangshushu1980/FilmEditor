@@ -18,12 +18,29 @@ Mem0 通过现有能力按项目、制作阶段、模型和问题定向召回，
 
 ## 验证证据
 
-- 服务、CLI、扩展及既有业务回归：106 项通过；包含 SDK 0.84.3、0.86、1.0.2 的真实扩展加载与 provider hook，官方模型选择及拒绝回退测试。
+- 服务、CLI、扩展及既有业务回归：本轮 124 项通过；包含实际已安装 PI SDK 的真实扩展加载与 provider hook，官方模型选择及拒绝回退测试。前端构建通过。原生资源审计测试支持新的托管 PI 启动器，不把 shell wrapper 当 SDK 路径。
 - 隔离实例 4195：真实固定 LLM 剧本 job `30cf2b67-f467-4f99-bae0-5710563136f3` 成功写回测试副本 revision 19；原片 revision 18 保留。
 - 真实 PiWeb 对话已加载制作 skill 与共享运行契约、调用 film 工具读取上下文，识别空间稿过期和五镜提示词缺失。官方复测 `01a10b60-cf99-7842-9f14-a2421d57f74e` 的原生 assistant 记录确认为 `deepseek/deepseek-flash`，完成三轮工具与回答。
 - 正式服务 4190 已部署；原片 revision 18 保留，创建独立制作工作区和只读讨论。对话 `01a10b67-dfd2-79a3-815e-13f5a56e61fb` 使用官方 DeepSeek及原生 film 工具，入口为顶部「制作助手」。
 - 真实 HTTP 测试覆盖等待 LLM 时交接控制权、正常自动采用、同键重试、跨源拒绝与 prepare 模式禁止视频提交。
 - 测试资料位于 `experiments/sean_film_pi_20261005/`。数据库、凭据及原生聊天历史不提交 Git。没有提交 GPU 或做画面/声音验收。
+- 原生 PI 隔离文字修订：revision 19 → 20，仅修改第一镜 continuity；同会话旧 generation 写入返回 `STALE_GENERATION`，revision 不变。这两项使用真实 PI 模型与工具，但 Task Center 响应是明确标注的测试 fixture，不能当作真实 Coordinator 制作任务交接验收。
+- 文字验收发现空间 job 的六段格式、参考绑定、相对方位和衣物落点问题；保留原生成结果，不直接采用。新增 `review_workflow_result` 与编辑器共用校验，保存可恢复的 reviewDraft、最新 warnings 和 Agent 来源，采用时使用已审阅稿。真实衣物信息不足继续保留 questions。
+- 修正过期空间稿输入：旧稿留作历史，不能作为 currentFilmSpaceInstructions。固定提示词明确要求带冒号的六段字段与尖括号引用标签。
+- 修正长轮询：等待工作流结果使用 35 秒客户端期限，其余请求 15 秒；请求超时不等于工作流失败，按原 jobId 恢复查询。
+- 原生 PI 成功保存五镜 reviewDraft，完整内容与本地修订稿一致，原 job.result、影片事实和 revision 20 未变；审计包含实际重新读取的 skill 哈希。服务校验发现文字自检漏了详细时间线的 `[Shot 1]`，并发现派生外观说话标签不匹配；最终通过共用编辑器审阅接口修复，warnings 清零，4 项资料/绑定问题仍保留，所以未采用。没有将文字自检冒充服务端校验通过。
+
+## 任务摘要恢复
+
+新增 SQLite `film_task_checkpoints` 保存阶段摘要与来源版本。`prepare_task_checkpoint` 只保存，`get_task_checkpoints` 查看本地确认状态，`submit_task_checkpoint` 要求明确审阅 sourceHash 和当前 generation；不自动创建、接管或提交远程任务。影片内容保存和摘要同步是两个结果，同步失败不回滚影片。
+
+提交通过现有 `task-center checkpoint`，仅子进程加载限定 guard：固定远程幂等键，检查实际发出的 task/controller/generation/正文哈希，只允许 info 和 checkpoint。摘要经 stdin 传递，凭据及正文不放进进程命令行。当前 CLI entry/adapter 的 SHA256 被固定，版本变化需重新评审，不能绕过校验。
+
+未尝试发送的旧摘要可由新 controller 审阅后建立新提交记录；曾发送但未确认的旧摘要须先核对原 ref/context/by。无法证明原结果时保留 needs_reconciliation，不能换新键重复提交。服务重启将中断提交标为 uncertain，不自动重发。测试使用真实已安装 CLI 访问本地 Coordinator fixture，未向真实 Coordinator 提交测试摘要。
+
+## 旧助手历史
+
+旧面板默认折叠为「旧助手 · 历史与兼容」。有外部制作任务绑定时只读，服务端同时拒绝旧助手创建、发送、采用及恢复写入；无任务绑定时可显式开启兼容模式。历史支持 Markdown/JSON 摘要导出，限制正文长度并过滤凭据，不导出完整上下文或伪造 PI 原生会话。
 
 ## 服务与恢复
 
@@ -39,6 +56,6 @@ Mem0 通过现有能力按项目、制作阶段、模型和问题定向召回，
 
 ## 仍待完成与边界
 
-核心接入可试用，但批准计划的全部 P4/P5 尚未结束：仍需 PI 制作 controller 的真实文字修订交接验收，以及旧历史只读入口与摘要导出收敛。当前保留旧助手回退入口；尚未自动生成任务 checkpoint/outbox 或将整份文档系统同步到 Task Center。
+核心接入、旧历史迁移和阶段摘要恢复已完成本地契约验收。仍需区分隔离 fixture 验收与真实 Coordinator 的 PI 制作 controller 交接；当前 Codex 开发任务不可冒充后者。真实制作任务绑定后的现场试用尚未完成，不将整份文档系统同步到 Task Center。
 
 远程控制权核对与本地 SQLite 写入之间没有跨系统原子事务；已做提交前及异步采用前复核，不能声称消除了所有极短竞态。图像/视频效果由用户判断，动作、声音、空间及尺度的具体效果问题继续逐项记录与处理。

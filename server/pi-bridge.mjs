@@ -8,14 +8,23 @@ import {promisify} from 'node:util';
 import {z} from 'zod';
 import {id,now,hash,fingerprint,fail} from './store.mjs';
 import {redact} from './diagnostics.mjs';
+import {TaskCheckpoints,taskCheckpointTools} from './task-checkpoints.mjs';
 
 const exec=promisify(execFile),uuid=z.string().uuid();
 const token=()=>randomBytes(32).toString('base64url');
-export const readTools=new Set(['get_film_context','get_current_spatial_plan','get_shot_details','get_entity_details','load_film_skill','validate_film_inputs','get_workflow_result','get_film_proposal','validate_film_draft','get_video_status','get_film_diagnostics','get_workflow_method','read_film_program']);
+export const readTools=new Set(['get_film_context','get_current_spatial_plan','get_shot_details','get_entity_details','load_film_skill','validate_film_inputs','get_workflow_result','get_film_proposal','validate_film_draft','get_video_status','get_film_diagnostics','get_workflow_method','read_film_program','get_task_checkpoints']);
 const videoTools=new Set(['generate_video','select_video','assemble_film']);
 const unsupportedTools=new Set(['view_reference_image','inspect_candidate_frames','view_visual_anchor','propose_film_program_change']);
 const parse=row=>row?JSON.parse(row.body):null;
 const error=(code,message,status=409)=>{throw Object.assign(new Error(message),{code,status});};
+function controllerProblem(task,session,instanceId){
+  if(task.status!=='running'||task.deletedAt||task.controllerConversationId!==session.id||task.piSessionId&&task.piSessionId!==session.id||task.codexThreadId)return {code:'CONTROLLER_MISMATCH',message:'当前对话没有制作控制权，请通过 Task Center 显式接管'};
+  if(session.client==='cli'&&task.piSessionId!==session.id)return {code:'CLI_IDENTITY_UNCONFIRMED',message:'CLI 写入需显式使用已登记的真实 PI 控制对话 ID'};
+  const scope=task.metadata?.filmBinding;
+  if(scope&&(scope.instanceId!==instanceId||scope.filmProjectId!==session.projectId))return {code:'TASK_FILM_MISMATCH',message:'任务影片绑定不匹配'};
+  if(session.controllerGeneration!==null&&session.controllerGeneration!==task.controllerGeneration)return {code:'STALE_GENERATION',message:'任务 generation 已变化，请重新连接'};
+  return null;
+}
 export function loopbackUrl(value){const u=new URL(value);if(!['http:','https:'].includes(u.protocol)||!['127.0.0.1','localhost','[::1]'].includes(u.hostname)||u.username||u.password||u.search||u.hash||u.pathname!=='/')error('INVALID_LOCAL_URL','需要无凭据的本机服务 URL',400);return u.origin;}
 export async function queryRemoteTask(taskId){
   const file=process.env.FILM_TASK_CENTER_CLI||path.join(os.homedir(),'.pi/agent/bin/task-center');
@@ -50,7 +59,7 @@ export async function createPiWebFilmSession({piUrl,workspaceRoot,provider='deep
 }
 
 export class FilmPiBridge{
-  constructor({store,agent,apiUrl,workspaceBase=path.join(os.homedir(),'projects/film-production'),queryTask=queryRemoteTask,piUrl='http://127.0.0.1:30141',piPublicUrl=piUrl,launchSession,extensionPath,piProvider=process.env.FILM_PI_PROVIDER||'deepseek',piModel=process.env.FILM_PI_MODEL||'deepseek-flash',piFetch=fetch}){
+  constructor({store,agent,apiUrl,workspaceBase=path.join(os.homedir(),'projects/film-production'),queryTask=queryRemoteTask,piUrl='http://127.0.0.1:30141',piPublicUrl=piUrl,launchSession,extensionPath,piProvider=process.env.FILM_PI_PROVIDER||'deepseek',piModel=process.env.FILM_PI_MODEL||'deepseek-flash',piFetch=fetch,checkpointSender}){
     this.store=store;this.agent=agent;this.apiUrl=loopbackUrl(apiUrl);this.workspaceBase=path.resolve(workspaceBase);this.queryTask=queryTask;this.piUrl=loopbackUrl(piUrl);this.piPublicUrl=piPublicUrl;this.launchSession=launchSession||this.newPiSession.bind(this);this.extensionPath=extensionPath;this.active=new Set();this.piProvider=z.string().min(1).max(200).parse(piProvider);this.piModel=z.string().min(1).max(200).parse(piModel);this.piFetch=piFetch;
     const publicUrl=new URL(piPublicUrl);if(!['http:','https:'].includes(publicUrl.protocol)||publicUrl.username||publicUrl.password||publicUrl.search||publicUrl.hash)error('INVALID_PI_URL','PiWeb 公开地址无效',400);
     store.db.exec(`CREATE TABLE IF NOT EXISTS film_pi_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -60,10 +69,12 @@ export class FilmPiBridge{
       CREATE TABLE IF NOT EXISTS film_pi_launches(id TEXT PRIMARY KEY,projectId TEXT NOT NULL,body TEXT NOT NULL);`);
     store.db.prepare('INSERT OR IGNORE INTO film_pi_meta VALUES(?,?)').run('instanceId',id());this.instanceId=store.db.prepare('SELECT value FROM film_pi_meta WHERE key=?').get('instanceId').value;
     for(const row of store.db.prepare('SELECT key,body FROM film_pi_operations').all()){const op=JSON.parse(row.body);if(op.status==='running')this.saveOperation(row.key,{...op,status:'uncertain',error:'服务重启中断请求；先对账原业务记录，不会自动重提交。'});}
+    this.checkpoints=new TaskCheckpoints({store,send:checkpointSender});
   }
   binding(projectId){this.store.get(projectId);return parse(this.store.db.prepare('SELECT body FROM film_pi_bindings WHERE projectId=?').get(projectId));}
   sessions(projectId){this.store.get(projectId);return this.store.db.prepare('SELECT body FROM film_pi_sessions WHERE projectId=? ORDER BY rowid DESC').all(projectId).map(parse).map(({observedRevision,...s})=>({...s,observedRevision}));}
-  state(projectId){return {owner:'Sean',schemaVersion:1,instanceId:this.instanceId,binding:this.binding(projectId),sessions:this.sessions(projectId),launches:this.store.db.prepare('SELECT body FROM film_pi_launches WHERE projectId=? ORDER BY rowid DESC LIMIT 10').all(projectId).map(parse),dependencies:['PI/PiWeb','Task Center'],legacyAssistantAvailable:true};}
+  checkpointState(projectId){const records=this.checkpoints.list(projectId,{limit:100});return {pending:records.filter(v=>!['submitted','reviewed'].includes(v.status)).map(v=>({checkpointId:v.id,status:v.status,filmRevision:v.source.filmRevision,controllerGeneration:v.submitter.controllerGeneration,reviewedCheckpointId:v.reviewedCheckpointId||null})),counts:this.store.db.prepare("SELECT json_extract(body,'$.status') AS status,count(*) AS count FROM film_task_checkpoints WHERE projectId=? GROUP BY status").all(projectId),automaticSubmission:false};}
+  state(projectId){return {owner:'Sean',schemaVersion:1,instanceId:this.instanceId,binding:this.binding(projectId),sessions:this.sessions(projectId),taskCheckpoints:this.checkpointState(projectId),launches:this.store.db.prepare('SELECT body FROM film_pi_launches WHERE projectId=? ORDER BY rowid DESC LIMIT 10').all(projectId).map(parse),dependencies:['PI/PiWeb','Task Center'],legacyAssistantAvailable:true};}
   async configure(projectId,raw){
     const b=z.object({taskId:z.string().regex(/^remote-[a-f0-9-]{36}$/).nullable(),mode:z.enum(['discuss','prepare','generate'])}).strict().parse(raw),p=this.store.get(projectId),old=this.binding(projectId);
     if(this.active.has(projectId))error('ACTIVE_PI_OPERATION','请等本片助手操作结束后修改绑定');
@@ -106,20 +117,30 @@ export class FilmPiBridge{
     if(session.mode==='discuss'||(video&&session.mode!=='generate'))error('MODE_FORBIDDEN',video?'当前绑定未允许视频操作':'当前绑定仅允许讨论',403);
     if(!binding.taskId)error('TASK_REQUIRED','写入需要远程制作任务',403);
     const task=await this.queryTask(binding.taskId);
-    if(task.status!=='running'||task.deletedAt||task.controllerConversationId!==session.id||task.piSessionId&&task.piSessionId!==session.id||task.codexThreadId)error('CONTROLLER_MISMATCH','当前对话没有制作控制权，请通过 Task Center 显式接管',403);
-    if(session.client==='cli'&&task.piSessionId!==session.id)error('CLI_IDENTITY_UNCONFIRMED','CLI 写入需显式使用已登记的真实 PI 控制对话 ID',403);
-    const scope=task.metadata?.filmBinding;if(scope&&(scope.instanceId!==this.instanceId||scope.filmProjectId!==session.projectId))error('TASK_FILM_MISMATCH','任务影片绑定不匹配');
-    if(session.controllerGeneration!==null&&session.controllerGeneration!==task.controllerGeneration)error('STALE_GENERATION','任务 generation 已变化，请重新连接',403);
+    const problem=controllerProblem(task,session,this.instanceId);if(problem)error(problem.code,problem.message,problem.code==='TASK_FILM_MISMATCH'?409:403);
     session.controllerGeneration=task.controllerGeneration;this.saveSession(session);
     if(revision!==undefined&&(session.observedRevision!==revision||this.store.get(session.projectId).revision!==revision))error('REVISION_CONFLICT','内容已改变，请先重新读取完整上下文');
-    return {taskId:task.id,controllerGeneration:task.controllerGeneration,piSessionId:session.id};
+    return {taskId:task.id,controllerGeneration:task.controllerGeneration,piSessionId:session.id,...(task.checkpoint?{checkpoint:{ref:task.checkpoint.ref,by:task.checkpoint.by,contextHash:hash(String(task.checkpoint.context||''))}}:{})};
   }
-  catalog(){return {owner:'Sean',instanceId:this.instanceId,tools:this.agent.toolCatalog().filter(t=>!unsupportedTools.has(t.name)),policy:'事实从 get_film_context 读取；写操作需已观察版本、当前远程 controller 与绑定授权。程序维护不在制作工具授权范围。'};}
+  catalog(){return {owner:'Sean',instanceId:this.instanceId,tools:[...this.agent.toolCatalog().filter(t=>!unsupportedTools.has(t.name)),...taskCheckpointTools],policy:'事实从 get_film_context 读取；写操作需已观察版本、当前远程 controller 与绑定授权。阶段摘要先保存后明确审阅提交，同步失败不回滚影片。程序维护不在制作工具授权范围。'};}
   saveOperation(key,op){this.store.db.prepare('UPDATE film_pi_operations SET body=? WHERE key=?').run(JSON.stringify(op),key);}
   async invoke(session,raw){
     const b=z.object({tool:z.string().min(1).max(100),args:z.record(z.string(),z.unknown()).default({}),idempotencyKey:z.string().uuid().optional(),observedRevision:z.number().int().nonnegative().optional()}).strict().parse(raw);
     if(unsupportedTools.has(b.tool))error('TOOL_NOT_AVAILABLE','此操作需要用户单独授权，不在制作接入工具中',403);
     if(!this.catalog().tools.some(t=>t.name===b.tool))error('UNKNOWN_FILM_TOOL','未知制作工具',400);
+    if(taskCheckpointTools.some(t=>t.name===b.tool)){
+      const write=b.tool!=='get_task_checkpoints';
+      if(write&&!b.idempotencyKey)error('IDEMPOTENCY_REQUIRED','写操作需要 idempotencyKey',400);
+      const key=write?`${session.projectId}:${b.idempotencyKey}`:null,requestHash=fingerprint({sessionId:session.id,tool:b.tool,args:b.args,observedRevision:b.observedRevision});
+      if(key){const row=this.store.db.prepare('SELECT * FROM film_pi_operations WHERE key=?').get(key);if(row){if(row.requestHash!==requestHash)error('IDEMPOTENCY_CONFLICT','相同请求键对应不同内容');const op=parse(row);if(op.status==='succeeded'){await this.authority(session);return op.result;}error(op.status==='failed'?'OPERATION_FAILED':'OPERATION_UNCERTAIN','原调用已记录；请查看摘要同步状态，明确重试同一 checkpointId 时使用新业务请求键');}}
+      if(write&&this.active.has(session.projectId))error('ACTIVE_PI_OPERATION','本片已有助手写操作，请等待');
+      if(write){this.active.add(session.projectId);this.store.db.prepare('INSERT INTO film_pi_operations VALUES(?,?,?,?)').run(key,session.projectId,requestHash,JSON.stringify({owner:'Sean',status:'running',tool:b.tool,piSessionId:session.id,createdAt:now()}));}
+      try{
+        const data=b.tool==='get_task_checkpoints'?{checkpoints:this.checkpoints.list(session.projectId,b.args)}:b.tool==='prepare_task_checkpoint'?await this.checkpoints.prepare({session,instanceId:this.instanceId,args:b.args,idempotencyKey:b.idempotencyKey,authorize:revision=>this.authority(session,{revision})}):await this.checkpoints.submit({session,args:b.args,authorize:()=>this.authority(session)});
+        const result={runId:id(),observedRevision:session.observedRevision,result:{content:[{type:'text',text:JSON.stringify(data)}],details:{tool:b.tool,checkpointId:data.id||null,filmRevisionUnchanged:true}}};
+        if(key)this.saveOperation(key,{owner:'Sean',status:'succeeded',result,finishedAt:now()});this.store.diagnostics.record({projectId:session.projectId,piSessionId:session.id,stage:'task-checkpoint',tool:b.tool,runId:result.runId,checkpointId:data.id||null,status:'succeeded'});return result;
+      }catch(e){if(key)this.saveOperation(key,{owner:'Sean',status:'failed',error:redact(e.message),checkpointId:e.checkpointId||null,finishedAt:now()});throw e;}finally{if(write)this.active.delete(session.projectId);}
+    }
     const write=!readTools.has(b.tool),revision=b.args.revision??b.observedRevision;
     if(write){if(!b.idempotencyKey)error('IDEMPOTENCY_REQUIRED','写操作需要 idempotencyKey',400);await this.authority(session,{video:videoTools.has(b.tool)});}
     const key=write?`${session.projectId}:${b.idempotencyKey}`:null,requestHash=fingerprint({sessionId:session.id,tool:b.tool,args:b.args,observedRevision:b.observedRevision});
@@ -130,7 +151,7 @@ export class FilmPiBridge{
     try{
       const result=await this.store.diagnostics.with({instanceId:this.instanceId,projectId:session.projectId,piSessionId:session.id,taskId:session.taskId,controllerGeneration:session.controllerGeneration,bindingVersion:session.bindingVersion},()=>this.agent.executeExternal({projectId:session.projectId,sessionId:session.id,mode:session.mode,observedRevision:session.observedRevision,skillSources:session.skillSources||[],provenance:{instanceId:this.instanceId,taskId:session.taskId,controllerGeneration:session.controllerGeneration,bindingVersion:session.bindingVersion},tool:b.tool,args:b.args,authorizeWrite:()=>this.authority(session,{video:videoTools.has(b.tool)})}));
       if(b.tool==='get_film_context'){
-        const block=result.result?.content?.find(v=>v.type==='text');if(block){const context=JSON.parse(block.text);context.schemaVersion=1;context.binding={instanceId:this.instanceId,filmProjectId:session.projectId,taskId:session.taskId,mode:session.mode,bindingVersion:session.bindingVersion,memoryPools:this.binding(session.projectId).memoryPools};context.taskState={status:'unlinked',canWrite:false};if(session.taskId)try{const task=await this.queryTask(session.taskId);context.taskState={status:task.status,controllerConversationId:task.controllerConversationId,controllerGeneration:task.controllerGeneration,canWrite:task.status==='running'&&task.controllerConversationId===session.id&&session.mode!=='discuss'};}catch(e){context.taskState={status:'unknown',canWrite:false,error:redact(e.message)};}block.text=JSON.stringify(context);}
+        const block=result.result?.content?.find(v=>v.type==='text');if(block){const context=JSON.parse(block.text);context.schemaVersion=1;context.taskCheckpoints=this.checkpointState(session.projectId);context.binding={instanceId:this.instanceId,filmProjectId:session.projectId,taskId:session.taskId,mode:session.mode,bindingVersion:session.bindingVersion,memoryPools:this.binding(session.projectId).memoryPools};context.taskState={status:'unlinked',canWrite:false};if(session.taskId)try{const task=await this.queryTask(session.taskId),problem=controllerProblem(task,session,this.instanceId);context.taskState={status:task.status,controllerConversationId:task.controllerConversationId,controllerGeneration:task.controllerGeneration,canWrite:!problem&&session.mode!=='discuss',...(problem?{writeBlocker:problem}:{})};}catch(e){context.taskState={status:'unknown',canWrite:false,error:redact(e.message)};}block.text=JSON.stringify(context);}
       }
       if(b.tool==='get_film_context'||write){session.observedRevision=result.observedRevision;this.saveSession(session);}
       if(key)this.saveOperation(key,{owner:'Sean',status:'succeeded',result,finishedAt:now()});return result;
@@ -150,7 +171,7 @@ export class FilmPiBridge{
 
 export function mountPiBridge(app,bridge){
   const bearer=req=>(req.get('Authorization')||'').replace(/^Bearer /,'');
-  const reply=fn=>async(req,res)=>{try{const data=await fn(req);res.json({ok:true,data,requestId:req.requestId});}catch(e){const diagnosticId=bridge.store.diagnostics.error(e,{requestId:req.requestId,stage:'pi-api'});res.status(e instanceof z.ZodError?400:e.status||500).json({ok:false,error:{code:e.code||'FILM_OPERATION_FAILED',message:e instanceof z.ZodError?'参数不符合工具契约':redact(e.message),retryable:e.status===503},requestId:req.requestId,diagnosticId});}};
+  const reply=fn=>async(req,res)=>{try{const data=await fn(req);res.json({ok:true,data,requestId:req.requestId});}catch(e){const diagnosticId=bridge.store.diagnostics.error(e,{requestId:req.requestId,stage:'pi-api'});res.status(e instanceof z.ZodError?400:e.status||500).json({ok:false,error:{code:e.code||'FILM_OPERATION_FAILED',message:e instanceof z.ZodError?'参数不符合工具契约':redact(e.message),retryable:e.status===503,...(e.checkpointId?{checkpointId:e.checkpointId}:{})},requestId:req.requestId,diagnosticId});}};
   app.get('/api/projects/:id/pi',reply(req=>bridge.state(uuid.parse(req.params.id))));
   app.put('/api/projects/:id/pi/binding',reply(req=>bridge.configure(uuid.parse(req.params.id),req.body)));
   app.post('/api/projects/:id/pi/launch',reply(req=>bridge.launch(uuid.parse(req.params.id),req.body)));

@@ -2,7 +2,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
-import {id,shotHash,promptSourceHash,shotInput,fingerprint} from './store.mjs';
+import {id,shotHash,promptSourceHash,shotInput,fingerprint,shotsContentHash} from './store.mjs';
 import {voiceReferences} from './voice-references.mjs';
 import {bindings} from './reference.mjs';
 import {validateShot,prepareCurrentInputs,generateStage} from './planning.mjs';
@@ -24,6 +24,25 @@ test('speaker references preserve global identity, inherit base voice and exclud
   const refs=voiceReferences(p,entities,relations,changed);assert.deepEqual(refs.map(a=>a.speakerId),['S1','S2']);assert.equal(refs[0].assetId,entities[0].assets[1].assetId);assert.equal(refs[0].speakerEntityId,entities[2].entityId);
   assert.deepEqual(voiceReferences(p,entities,relations,{...changed,nativeAudioAssetId:id()}),[]);
   entities[0].assets.push({...entities[0].assets[1],assetId:id()});assert.throws(()=>voiceReferences(p,entities,relations,shot),/唯一基础声音/);
+});
+
+test('spatial requests distinguish current direction from superseded spatial history',async()=>{
+  for(const stale of [false,true]){
+    const {p,shot,store}=fixture();prepareCurrentInputs(store,p,'spatial');
+    const plan={scenePlan:'Earlier table blocking',shots:[],sourceHash:stale?'superseded':shotsContentHash(p)};p.spatialPlan=plan;
+    const draft={scenePlan:'New table blocking',questions:[],shots:[{id:shot.id,framing:shot.framing,continuity:shot.continuity,startState:'A seated',endState:'A seated',transitionFromPrevious:'Opening',prompt:shot.prompt,changes:[]}]};let request;
+    const server=createServer(async(req,res)=>{let text='';for await(const chunk of req)text+=chunk;request=JSON.parse(text);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:JSON.stringify(draft)}}]}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+    try{
+      p.settings.llm.baseUrl=`http://127.0.0.1:${server.address().port}`;
+      await generateStage(store,{},p,'spatial',null,()=>{},undefined,'Use current shot actions');
+      const context=JSON.parse(request.messages[1].content);
+      assert.deepEqual(context.previousSpatialPlan,plan);
+      assert.equal(context.previousSpatialPlanStatus,stale?'stale':'current');
+      assert.equal(context.currentFilmSpaceInstructions,stale?null:plan.scenePlan);
+      assert.equal(context.spatialNotes,'Use current shot actions');
+      assert.ok(request.messages[0].content.includes('INCLUDING the trailing colon'));
+    }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+  }
 });
 test('voice prompt validates speaker/image provenance and timbre retention without transcript',()=>{
   const {p,shot,store}=fixture();assert.equal(validateShot(store,p,shot).voiceReferences.length,1);assert.equal(shot.verifiedAudioTranscript,'');

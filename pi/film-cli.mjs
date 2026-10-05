@@ -4,7 +4,7 @@ import path from 'node:path';
 import {readFileSync,writeFileSync,renameSync,existsSync,lstatSync,realpathSync,unlinkSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {loopbackOrigin as loopbackUrl,loopbackFetch} from './loopback-http.mjs';
+import {loopbackOrigin as loopbackUrl,loopbackFetch,filmRequestSignal} from './loopback-http.mjs';
 
 const aliases={context:'get_film_context',status:'get_film_context',entities:'get_film_context',shots:'get_film_context',methods:'get_workflow_method',diagnostics:'get_film_diagnostics'};
 const optionNames=['--workspace','--session-id','--args','--idempotency-key','--revision','--tool','--api-url','--project-id','--task-id','--mode'];
@@ -24,7 +24,7 @@ function readLocal(file,root){
   if(lstatSync(folder).isSymbolicLink()||realpathSync(folder)!==folder||lstatSync(file).isSymbolicLink()||realpathSync(file)!==file)throw new CliError('FILM_WORKSPACE','Local film files must remain inside the workspace without symlinks.');
   try{return JSON.parse(readFileSync(file,'utf8'));}catch{throw new CliError('FILM_LOCAL_JSON','A local film binding or credential file is invalid. Reinitialize the workspace.');}
 }
-export async function runCli(argv,{cwd=process.cwd(),env=process.env,fetchImpl=loopbackFetch}={}){
+export async function runCli(argv,{cwd=process.cwd(),env=process.env,fetchImpl=loopbackFetch,signal,timeoutSignal}={}){
   const secrets=new Set(env.FILM_BOOTSTRAP_TOKEN?[env.FILM_BOOTSTRAP_TOKEN]:[]);
   try{
     const args=[...argv];let command=args.shift();const options={};
@@ -38,7 +38,7 @@ export async function runCli(argv,{cwd=process.cwd(),env=process.env,fetchImpl=l
       const taskId=options['--task-id']||null,mode=options['--mode']||'discuss';
       if(taskId&&(!taskId.startsWith('remote-')||!uuid.test(taskId.slice(7))))throw new CliError('FILM_ARGUMENTS','Task ID must be a remote Task Center ID.');
       if(!['discuss','prepare','generate'].includes(mode)||mode!=='discuss'&&!taskId)throw new CliError('FILM_ARGUMENTS','Choose discuss, or bind a remote task before prepare/generate.');
-      let response;try{response=await fetchImpl(apiUrl+'/api/projects/'+options['--project-id']+'/pi/binding',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({taskId,mode}),redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw new CliError('FILM_UNREACHABLE','Film API request failed; no session or task was started.',true);}
+      let response;try{response=await fetchImpl(apiUrl+'/api/projects/'+options['--project-id']+'/pi/binding',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({taskId,mode}),redirect:'error',signal:filmRequestSignal(undefined,signal,timeoutSignal)});}catch{throw new CliError('FILM_UNREACHABLE','Film API request failed; no session or task was started.',true);}
       let result;try{result=await response.json();}catch{throw new CliError('FILM_PROTOCOL','Film service returned an invalid JSON response.');}
       if(!response.ok||result?.ok!==true)throw new CliError(String(result?.error?.code||'FILM_REQUEST_FAILED'),String(result?.error?.message||'Film binding could not be initialized.'),Boolean(result?.error?.retryable));
       if(!('data' in result))throw new CliError('FILM_PROTOCOL','Film API response is missing data.');return scrub(result.data,secrets);
@@ -63,7 +63,12 @@ export async function runCli(argv,{cwd=process.cwd(),env=process.env,fetchImpl=l
     const scope={schemaVersion:1,owner:'Sean',sessionId,instanceId:binding.instanceId,filmProjectId:binding.filmProjectId,bindingVersion:binding.bindingVersion,apiUrl,workspaceRoot:workspace};
     const sameScope=cached&&typeof cached.token==='string'&&cached.token&&Object.entries(scope).every(([key,value])=>cached[key]===value);
     const request=async(route,body,credential)=>{
-      let response;try{response=await fetchImpl(apiUrl+route,{method:body===undefined?'GET':'POST',headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...(credential?{Authorization:'Bearer '+credential}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.timeout(30000)});}catch{throw new CliError('FILM_UNREACHABLE','Film API request failed; inspect the binding and service before retrying.',true);}
+      const requestSignal=filmRequestSignal(body,signal,timeoutSignal);
+      let response;try{response=await fetchImpl(apiUrl+route,{method:body===undefined?'GET':'POST',headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...(credential?{Authorization:'Bearer '+credential}:{})},...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:requestSignal});}catch{
+        if(signal?.aborted)throw new CliError('FILM_CANCELLED','The request was cancelled; existing film jobs may continue. Query the same job before resubmitting work.');
+        if(requestSignal.aborted)throw new CliError('FILM_TIMEOUT','The request deadline elapsed; it does not mean the film job failed or the service is offline. Query the same job ID before resubmitting work.',true);
+        throw new CliError('FILM_UNREACHABLE','Film API request failed; inspect the binding and service before retrying.',true);
+      }
       let result;try{result=await response.json();}catch{throw new CliError('FILM_PROTOCOL','Film service returned an invalid JSON response.');}
       if(!response.ok||result?.ok!==true){
         if(response.status===401||['BINDING_STALE','STALE_GENERATION'].includes(result?.error?.code)){if(existsSync(cacheFile)){readLocal(cacheFile,workspace);unlinkSync(cacheFile);}}
