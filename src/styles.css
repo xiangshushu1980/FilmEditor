@@ -83,7 +83,10 @@
 .stat-tiles>button:hover{border-color:#58a497}
 .stat-tiles small{color:var(--muted);font-size:10px}
 .stat-tiles b{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.focus-card{margin:12px 0;padding:14px}
+.focus-card{margin:12px 0;padding:14px;cursor:pointer;transition:border-color .15s,background .15s}
+.focus-card:hover,.focus-card.card-active{border-color:#58cabb}
+.focus-card.card-active{box-shadow:inset 3px 0 #36cbbb}
+.focus-card:focus-visible,.focus-shot:focus-visible{outline:2px solid #58e0cf;outline-offset:2px}
 .focus-card .section-head{margin-bottom:10px}
 .focus-card .section-head small{display:block;margin-top:4px;font-size:10px}
 .focus-actions{justify-content:flex-end;margin-top:10px}
