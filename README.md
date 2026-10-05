@@ -4,6 +4,8 @@ Owner: Sean。Node 24 + React/Vite + Express；单页沿用 Reference 实体编�
 
 任务与验证范围见 [交付记录](DELIVERY.md)；Task Center：`remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1`。
 
+2026-10-05 调整的目标与验收草案见 [固定工作流、互动提示词与 Agent 调试目标](WORKFLOW_GOAL.md)：效果由用户判断，本轮聚焦流程、提示词和程序诊断；待用户确认执行方案。下文早期 MVP 的交付记录不替代该范围。
+
 ## 安装与启动
 
 ```bash
