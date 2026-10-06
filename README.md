@@ -76,6 +76,7 @@ hive-resource register service --id service:sean-film-editor --name 'Sean Film E
 
 - `src/RecordCard.jsx`：紧凑、可选中的条目卡；点整张卡选择记录并切换右侧详情。卡片只放标题、状态与少量索引信息，不重复右侧正文。
 - `src/ExpandableRecordGroup.jsx`：折叠/展开一组历史卡片，适用于任务记录、创作版本及后续实体变更历史。
+- 桌面三栏可拖动两根分隔条调整宽度（左/中、 中/右），本地记忆宽度；左栏仍可单独收起。窄屏改为单列并隐藏拖动条。
 - 详情由右侧检查器展示；卡片动作使用图标/短标签、`aria-label` 和 `title`，不再添加“查看详情”链接。
 - 常规按钮高 36px，次级轻按钮 30px；主要动作保留清楚的文字。选择态微光、主按钮悬停扫光、生成状态边缘流光参考 Hivemind 的 GlowBorder、ShimmerButton、BorderBeam，均支持减少动态效果偏好。Hivemind 的 Vue/Tailwind 组件不直接复制；资源仪表盘依赖 ECharts 且当前页面没有对应资源指标，因此不引入。
 - 概况与统计采用紧凑分块布局；新增实体、历史或候选列表时复用以上卡片与分组组件。

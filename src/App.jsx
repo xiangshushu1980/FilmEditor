@@ -42,13 +42,15 @@ export default function App() {
   const [projects,setProjects]=useState([]),[p,setP]=useState(null),[draft,setDraft]=useState(null),[config,setConfig]=useState(null);
   const [busy,setBusy]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState('');
   const [sidebarCollapsed,setSidebarCollapsed]=useState(false);
+  const [panelWidths,setPanelWidths]=useState(()=>{try{return {...{sidebar:250,inspector:385},...JSON.parse(localStorage.getItem('film-editor-panel-widths')||'{}')};}catch{return {sidebar:250,inspector:385};}});
+  const [panelResizing,setPanelResizing]=useState(false);
   const [shotId,setShotId]=useState(''),[shotDraft,setShotDraft]=useState(null),[tab,setTab]=useState('edit'),[workflowStage,setWorkflowStage]=useState('script'),[inspectorMode,setInspectorMode]=useState('script'),[scriptTab,setScriptTab]=useState('plot');
   const [modal,setModal]=useState(''),[source,setSource]=useState(null),[selection,setSelection]=useState([]),[search,setSearch]=useState('');
   const [updates,setUpdates]=useState([]),[entityId,setEntityId]=useState(''),[zoom,setZoom]=useState(''),[newTitle,setNewTitle]=useState(''),[record,setRecord]=useState(null),[deleteTarget,setDeleteTarget]=useState(null);
   const [selectedRecord,setSelectedRecord]=useState(null),[recordDetails,setRecordDetails]=useState({});
   const [feedback,setFeedback]=useState(null),[proposal,setProposal]=useState(null),[proposalPrompt,setProposalPrompt]=useState(''),[revisionJob,setRevisionJob]=useState('');
   const [spatialProposal,setSpatialProposal]=useState(null),[spatialDraft,setSpatialDraft]=useState(null),[spatialJob,setSpatialJob]=useState(''),[spatialNotes,setSpatialNotes]=useState(''),[spatialValidation,setSpatialValidation]=useState(null),[sceneDraft,setSceneDraft]=useState('');
-  const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''}),lastGenerationRef=useRef(null);
+  const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''}),lastGenerationRef=useRef(null),workspaceRef=useRef(null),resizeDragRef=useRef(null);
   const shot=p?.shots.find(s=>s.id===shotId),snapshotById=Object.fromEntries((p?.snapshots||[]).map(s=>[s.id,s]));
   const entities=Object.entries(p?.entities||{}).map(([eid,v])=>({...snapshotById[v.snapshotId]?.manifest.entities.find(e=>e.entityId===eid),snapshot:snapshotById[v.snapshotId]}));
   const assets=entities.flatMap(e=>e.assets.filter(a=>e.snapshot.assets[a.assetId]).map(a=>({...a,hash:e.snapshot.assets[a.assetId].hash})));
@@ -85,7 +87,8 @@ export default function App() {
   async function work(name,fn) {if(busy)return;setBusy(name);setError('');setMessage('');try{await fn();}catch(e){setError(e.message);}finally{setBusy('');}}
   function clean(){if(dirty)throw new Error('请先保存当前剧本／镜头修改，再继续。');}
   useEffect(()=>{void work('读取项目',async()=>{setConfig(await api('/config'));const list=await api('/projects');setProjects(list);const selected=new URLSearchParams(location.search).get('project')||localStorage.getItem('sean-film-project');if(list.some(p=>p.id===selected))apply(await api(`/projects/${selected}`));else if(list.length)apply(await api(`/projects/${list[0].id}`));});},[]);
-  useEffect(()=>{setShotDraft(shot?spec(shot):null);},[p?.id,p?.revision,shotId]);
+  useEffect(()=>{setShotDraft(shot?spec(shot):null);},[p?.id,p?.revision]);
+  useEffect(()=>{localStorage.setItem('film-editor-panel-widths',JSON.stringify(panelWidths));},[panelWidths]);
   useEffect(()=>{
     if(config?.activeGeneration){lastGenerationRef.current=config.activeGeneration;return;}
     const previous=lastGenerationRef.current;if(!previous)return;
@@ -103,6 +106,37 @@ export default function App() {
     return()=>{cancelled=true;clearInterval(timer);};
   },[p?.id,p?.revision,dirty,busy]);
   const action=(suffix,body={})=>api(`/projects/${p.id}/${suffix}`,{revision:p.revision,...body});
+  function beginPanelResize(event,side) {
+    if(event.button!==0)return;
+    event.preventDefault();event.currentTarget.setPointerCapture?.(event.pointerId);
+    resizeDragRef.current={side,startX:event.clientX,widths:panelWidths};setPanelResizing(true);
+  }
+  function movePanelResize(event) {
+    const drag=resizeDragRef.current,root=workspaceRef.current;if(!drag||!root)return;
+    const delta=event.clientX-drag.startX,available=root.clientWidth||window.innerWidth;
+    if(drag.side==='sidebar') {
+      const max=Math.max(180,Math.min(360,available-drag.widths.inspector-16-420));
+      root.style.setProperty('--sidebar-width',`${Math.max(180,Math.min(max,drag.widths.sidebar+delta))}px`);
+    } else {
+      const max=Math.max(320,Math.min(600,available-drag.widths.sidebar-16-420));
+      root.style.setProperty('--inspector-width',`${Math.max(320,Math.min(max,drag.widths.inspector-delta))}px`);
+    }
+  }
+  function endPanelResize(event) {
+    if(!resizeDragRef.current)return;
+    const root=workspaceRef.current,styles=root&&getComputedStyle(root);
+    if(styles)setPanelWidths({sidebar:parseFloat(styles.getPropertyValue('--sidebar-width'))||panelWidths.sidebar,inspector:parseFloat(styles.getPropertyValue('--inspector-width'))||panelWidths.inspector});
+    resizeDragRef.current=null;setPanelResizing(false);
+    if(event?.currentTarget?.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+  function nudgePanelResize(event,side) {
+    const delta=event.key==='ArrowRight'?24:event.key==='ArrowLeft'?-24:0;if(!delta)return;event.preventDefault();
+    setPanelWidths(current=>{
+      const root=workspaceRef.current,available=root?.clientWidth||window.innerWidth;
+      if(side==='sidebar'){const max=Math.max(180,Math.min(360,available-current.inspector-16-420));return {...current,sidebar:Math.max(180,Math.min(max,current.sidebar+delta))};}
+      const max=Math.max(320,Math.min(600,available-current.sidebar-16-420));return {...current,inspector:Math.max(320,Math.min(max,current.inspector-delta))};
+    });
+  }
   async function savedInput() {
     if(!dirty)return p;
     const value=await api(`/projects/${p.id}`,{revision:p.revision,...draft,...(shotDirty?{shotEdits:[shotDraft]}:{}),...(sceneDirty?{scenePlan:sceneDraft}:{})},'PATCH');apply(value);return value;
@@ -145,7 +179,7 @@ export default function App() {
   const ordered=(from,to)=>work('调整镜头顺序',async()=>{clean();const ids=p.shots.map(s=>s.id);[ids[from],ids[to]]=[ids[to],ids[from]];apply(await action('shot-order',{shotIds:ids}));});
   const openImport=()=>work('读取 Reference',async()=>{clean();setSource(await api('/reference/entities'));setSelection([]);setModal('import');});
   const checkUpdates=()=>work('检查来源',async()=>{const value=await api(`/projects/${p.id}/reference-changes`);setUpdates(value);setMessage(value.some(u=>u.status!=='current')?'发现来源变化，请查看实体栏':'所有实体快照都是当前修订');});
-  const chooseShot=id=>{if(shotDirty){setError('请先保存镜头编辑。');return;}setShotId(id);setTab('edit');setInspectorMode('shot');};
+  const chooseShot=id=>{if(shotDirty){setError('请先保存镜头编辑。');return;}const next=p?.shots.find(item=>item.id===id);setShotDraft(next?spec(next):null);setShotId(id);setTab('edit');setInspectorMode('shot');};
   const addShot=afterId=>work('添加镜头',async()=>{
     clean();const eid=entityId||entities[0]?.entityId;if(!eid)throw new Error('请先导入实体');
     const images=assets.filter(a=>a.entityId===eid&&a.mediaType==='image').map(a=>a.assetId);if(!images.length)throw new Error('此实体没有当前确认图片');
@@ -182,7 +216,7 @@ export default function App() {
     <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-pi" onClick={openPiWeb}>PIWeb 对话</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
     {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
     {(error||message||busy)&&<div className={`notice ${error?'error':''}`} role="status"><span>{error||busy||message}</span>{!busy&&<button className="quiet" onClick={()=>{setError('');setMessage('');}}>关闭</button>}</div>}
-    <main className={`workspace ${sidebarCollapsed?'sidebar-collapsed':''}`}>
+    <main ref={workspaceRef} style={{'--sidebar-width':`${panelWidths.sidebar}px`,'--inspector-width':`${panelWidths.inspector}px`}} className={`workspace ${sidebarCollapsed?'sidebar-collapsed':''} ${panelResizing?'panel-resizing':''}`}>
       <aside className="sidebar"><div className="section-head sidebar-heading"><h2>短片项目</h2><div className="sidebar-controls"><button className="quiet accent" disabled={!!busy||dirty} onClick={()=>setModal('create')}>＋ 新建</button><button className="quiet sidebar-toggle" aria-label={sidebarCollapsed?'展开左侧栏':'收起左侧栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed?'展开左侧栏':'收起左侧栏'} onClick={()=>setSidebarCollapsed(value=>!value)}>{sidebarCollapsed?'›':'‹'}</button></div></div>
         <select aria-label="选择项目" value={p?.id||''} disabled={!!busy||dirty} onChange={e=>work('打开项目',async()=>{apply(await api(`/projects/${e.target.value}`));setUpdates([]);})}><option value="" disabled>选择项目</option>{projects.map(p=><option key={p.id} value={p.id}>{p.title}</option>)}</select>
         <div className="section-head entity-head"><h2>实体快照</h2><Badge>{entities.length}</Badge></div><p className="muted compact">将 Reference 的设定和定稿素材带入当前短片。</p>
@@ -195,6 +229,7 @@ export default function App() {
         {updates.some(u=>u.status==='newer')&&<button className="update-button" disabled={!!busy||dirty} onClick={()=>work('使用最新修订',async()=>{clean();apply(await action('use-latest'));setUpdates([]);setMessage('已创建新快照；相关镜头和成片需要更新');})}>使用最新修订</button>}
         <div className="sidebar-footer"><p>来源快照独立保存，旧版本可追溯。</p>{p&&<a href={`/api/projects/${p.id}/export`} download>导出项目记录 ↗</a>}</div>
       </aside>
+      {!sidebarCollapsed&&<div className="panel-resizer sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="调整项目导航栏宽度" aria-valuemin="180" aria-valuemax="360" aria-valuenow={panelWidths.sidebar} tabIndex={0} onPointerDown={event=>beginPanelResize(event,'sidebar')} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} onKeyDown={event=>nudgePanelResize(event,'sidebar')}/>}
       <section className="story-panel">
         {!p?<div className="welcome"><span className="eyebrow">SEAN / FILM EDITOR</span><h1>让故事成为短片。</h1><p>选择实体，写下剧情，审阅每一镜。保留尝试，也保留决定。</p><button className="primary" onClick={()=>setModal('create')}>创建第一部短片</button><div className="flow"><span>实体</span><i>→</i><span>剧本</span><i>→</i><span>镜头</span><i>→</i><span>成片</span></div></div>:<>
           <div className="story-title"><div><span className="eyebrow">STORY / {String(p.shots.length).padStart(2,'0')} SHOTS</span><h1>{draft?.title||p.title}</h1></div><small className="muted">{p.shots.reduce((n,s)=>n+s.durationSec,0).toFixed(1)} 秒 · {p.settings.render.width} × {p.settings.render.height}</small></div>
@@ -227,6 +262,7 @@ export default function App() {
           </section>
         </>}
       </section>
+      <div className="panel-resizer inspector-resizer" role="separator" aria-orientation="vertical" aria-label="调整右侧详情栏宽度" aria-valuemin="320" aria-valuemax="600" aria-valuenow={panelWidths.inspector} tabIndex={0} onPointerDown={event=>beginPanelResize(event,'inspector')} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} onKeyDown={event=>nudgePanelResize(event,'inspector')}/>
       <aside id="shot-inspector" className="inspector"><div className="section-head"><h2>{inspectorMode==='pi'?'PIWeb 对话':inspectorMode==='record'?selectedRecord?.title||'记录详情':inspectorMode==='script'?'故事与剧本':inspectorMode==='spatial'?'全片空间详情':inspectorMode==='shot'&&tab==='history'?'视频候选':'镜头详情'}</h2>{inspectorMode==='shot'&&shot&&<Badge>{shot.durationSec}s</Badge>}</div>
         {inspectorMode==='pi'&&<FilmPiPanel project={p}/>}
         {inspectorMode==='record'&&selectedRecord&&<RecordDetails value={recordDetails[selectedRecord.key]}/>}
