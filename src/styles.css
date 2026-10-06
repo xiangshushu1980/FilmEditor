@@ -191,5 +191,11 @@ button.quiet{min-height:var(--control-height-small)}
 .story-stage-actions{display:flex;justify-content:flex-end;margin:8px 0 18px}
 .shot-list .shot-card.focus-shot{display:block;min-height:98px;padding:0}
 .shot-list .shot-card.focus-shot .record-card-main{display:grid;width:100%;min-height:98px;grid-template-columns:28px minmax(0,1fr)}
+.stage-jump{position:fixed;z-index:8;top:50%;right:calc(max(0px,(100vw - 1920px)/2) + var(--inspector-width,385px) + 12px);transform:translateY(-50%);display:grid;gap:7px}
+.stage-jump button{width:32px;height:32px;min-height:32px;padding:0;border-radius:50%;background:#111c25eF;border-color:#45616d;color:#c0d4dc;font-size:12px;font-weight:700;box-shadow:0 3px 12px #0008;backdrop-filter:blur(8px)}
+.stage-jump button:hover:not(:disabled),.stage-jump button.active{color:#102027;background:#58e0cf;border-color:#a2fff0;box-shadow:0 0 14px #58e0cf99}
+#script-stage,#shotlist-stage,#video-stage{scroll-margin-top:18px}
+@media(max-width:1200px){.stage-jump{right:12px}}
+@media(max-width:760px){.stage-jump{top:auto;right:12px;bottom:14px;transform:none;display:flex}.stage-jump button{box-shadow:0 3px 14px #000b}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 @media(max-width:760px){.record-list{grid-template-columns:1fr}.shot-list .record-card-main{grid-template-columns:24px minmax(0,1fr)}.overview-conclusion{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.overview-conclusion>small{grid-column:1;grid-row:1}.overview-conclusion strong{grid-column:1;grid-row:2;min-width:0}.overview-conclusion button{grid-column:2;grid-row:1/3}.overview-conclusion p{grid-column:1/-1;grid-row:3;width:auto;max-width:100%;align-self:flex-start}}
