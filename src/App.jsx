@@ -58,9 +58,6 @@ export default function App() {
   const assets=entities.flatMap(e=>e.assets.filter(a=>e.snapshot.assets[a.assetId]).map(a=>({...a,hash:e.snapshot.assets[a.assetId].hash})));
   const selectedEntity=entities.find(e=>e.entityId===entityId);
   const candidates=p?.candidates.filter(c=>c.shotId===shotId)||[];
-  const previewCandidate=candidates.find(c=>c.id===shot?.selectedCandidateId&&c.isCurrent&&c.status==='succeeded'&&c.media)||[...candidates].reverse().find(c=>c.isCurrent&&c.status==='succeeded'&&c.media);
-  const previewCut=p?.cuts.find(c=>c.id===p.selectedCutId);
-  const previewAsset=shot?.imageAssetIds.map(id=>assets.find(a=>a.assetId===id)).find(Boolean);
   const sceneDirty=!!p?.spatialPlan&&sceneDraft!==p.spatialPlan.scenePlan;
   const projectDirty=!!p&&!!draft&&JSON.stringify(draft)!==JSON.stringify({title:p.title,plot:p.plot,script:p.script,dialogue:p.dialogue,settings:p.settings})||sceneDirty;
   const shotDirty=!!shot&&!!shotDraft&&JSON.stringify(shotDraft)!==JSON.stringify(spec(shot));
@@ -207,9 +204,6 @@ export default function App() {
     setMessage('已从当前拍摄本删除镜头；版本、历史视频和成片保留。请检查拍摄本及空间衔接。');
   });
   const create=()=>work('创建项目',async()=>{if(!newTitle.trim())return;apply(await api('/projects',{title:newTitle}));await refreshList();setModal('');setNewTitle('');});
-  const incompletePrompts=p?.shots.filter(s=>!s.prompt.trim()||(p.generationState?.prompts||p.stages?.prompts||[]).find(v=>v.shotId===s.id)?.status==='stale')||[];
-  const currentSpatialProposal=[...(p?.jobs||[])].reverse().find(j=>j.kind==='spatial'&&j.status==='succeeded'&&!j.appliedAt&&j.inputRevision===p?.revision);
-  const runningPlan=p?.jobs?.find(j=>['script','shots','prompt','revision','spatial'].includes(j.kind)&&j.status==='running');
   const openSpatial=()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob('');setModal('spatial');};
   // Owner: Sean — reveal project-side PIWeb connection settings.
   const openPiWeb=()=>setInspectorMode('pi');
@@ -217,14 +211,6 @@ export default function App() {
   const navigateStage=stage=>{setWorkflowStage(stage);if(stage==='script'){setInspectorMode('script');return;}if(stage==='shots'){setInspectorMode('shot');setTab('edit');return;}setInspectorMode('shot');setTab('history');};
   const jumpStage=stage=>{navigateStage(stage);requestAnimationFrame(()=>goTo(({script:'script-stage',shots:'shotlist-stage',video:'video-stage'})[stage]));};
   const versionGroups=[];for(let i=0;i<(p?.planningVersions||[]).length;){const before=p.planningVersions[i],after=p.planningVersions[i+1];if(before.kind?.startsWith('before:')&&after){versionGroups.push({before,after});i+=2;}else{versionGroups.push({before:null,after:before});i++;}}
-  let nextStep={title:'可以按镜头生成视频',detail:'点击生成视频会保存当前修改、校验本镜输入并记录版本；其他镜头可稍后继续制作。',button:'前往本镜视频生成',run:()=>{setWorkflowStage('video');setTab('history');goTo('shot-inspector');}};
-  if(runningPlan)nextStep={title:`正在生成${stageNames[runningPlan.kind]||'内容'}`,detail:'结果会保存到项目和任务历史，完成后可以编辑或重新生成。'};
-  else if(!(draft?.script||p?.script)?.trim())nextStep={title:'先完成剧本与对白',detail:'直接编辑或生成剧本，然后在拍摄本区域继续生成，无需单独确认。',button:'查看剧本与对白',run:()=>navigateStage('script')};
-  else if(!p?.shots.length)nextStep={title:'下一步生成拍摄本',detail:'直接使用当前剧本生成镜头安排，系统会保存输入版本。',button:'生成拍摄本',run:()=>generateStage('shots')};
-  else if(incompleteShotPlans.length)nextStep={title:'有镜头安排尚未补全',detail:incompleteShotPlans.map(s=>`「${s.title}」缺少${s.missing.join('、')}。`).join(' ')+' 可以先编辑这些镜头，也可制作其他已完成的镜头。',button:'查看拍摄安排',run:()=>navigateStage('shots')};
-  else if(p?.stages?.spatial==='stale'||incompletePrompts.length)nextStep={title:p?.stages?.spatial==='stale'?'空间与站位需要跟随拍摄本更新':`还有 ${incompletePrompts.length} 镜提示词待编写或更新`,detail:'共用空间、站位和逐镜提示词都在拍摄本里。可以修订全片，也可在有效空间方案下逐镜编写。',button:currentSpatialProposal?'查看当前全片修订稿':'编写空间与全部提示词',run:()=>currentSpatialProposal?readSpatial(currentSpatialProposal.id):openSpatial()};
-  else if(!config?.enableGpu)nextStep={title:'视频生成尚未启用',detail:'宿主未启用 GPU 生成，请检查运行配置。',button:'查看接口与参数',run:()=>setModal('settings')};
-  else if(config?.activeCandidateId)nextStep={title:'视频正在生成或恢复',detail:`${config.activeGeneration?.shotTitle||'其他镜头'}正在占用生成通道，结束后可提交下一镜。`,button:'查看生成状态',run:()=>{setTab('history');goTo('shot-inspector');}};
   return <>
     <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-pi" onClick={openPiWeb}>PIWeb 对话</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
     {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
@@ -246,11 +232,6 @@ export default function App() {
       <section className="story-panel">
         {!p?<div className="welcome"><span className="eyebrow">SEAN / FILM EDITOR</span><h1>让故事成为短片。</h1><p>选择实体，写下剧情，审阅每一镜。保留尝试，也保留决定。</p><button className="primary" onClick={()=>setModal('create')}>创建第一部短片</button><div className="flow"><span>实体</span><i>→</i><span>剧本</span><i>→</i><span>镜头</span><i>→</i><span>成片</span></div></div>:<>
           <div className="story-title"><div><span className="eyebrow">STORY / {String(p.shots.length).padStart(2,'0')} SHOTS</span><h1>{draft?.title||p.title}</h1></div><small className="muted">{p.shots.reduce((n,s)=>n+s.durationSec,0).toFixed(1)} 秒 · {p.settings.render.width} × {p.settings.render.height}</small></div>
-          <section className="film-overview" aria-label="影片概况">
-            <div className="film-overview-head"><div><span className="eyebrow">制作概况</span><h2>{draft?.title||p.title}</h2></div><Badge tone={incompletePrompts.length||incompleteShotPlans.length?'warn':'good'}>{incompletePrompts.length||incompleteShotPlans.length?'待完善':'流程就绪'}</Badge></div>
-            <div className="overview-steps" aria-label="短片制作阶段">{[['script','剧本',p.script.trim()?'已就绪':'待编写'],['shots','拍摄本与提示词',p.shots.length?`${p.shots.length} 镜 · ${p.shots.length-incompletePrompts.length} 镜提示词可用`:'待生成'],['video','视频与成片',p.cuts.length?`${p.cuts.length} 版成片`:config?.activeCandidateId?'生成中':'按镜头生成']].map(([key,title,status],index)=><button type="button" className={`overview-step ${workflowStage===key?'active':''}`} key={key} aria-current={workflowStage===key?'step':undefined} onClick={()=>navigateStage(key)}><span>{index+1}</span><div><b>{title}</b><small>{status}</small></div></button>)}</div>
-            <div className="overview-content"><div className="overview-conclusion"><small>当前结论</small><strong>{nextStep.title}</strong><p>{nextStep.detail}</p>{nextStep.button&&<button className="quiet accent" disabled={!!busy} onClick={nextStep.run}>{nextStep.button} ↗</button>}</div><div className="overview-preview"><div className="preview-label"><b>{workflowStage==='video'&&previewCut?'当前成片预览':shot?`${previewCandidate?'视频预览':'参考图预览'} · ${shot.title}`:'镜头预览'}</b>{workflowStage==='video'&&previewCut?<small>{Number(previewCut.probe.format.duration).toFixed(1)} 秒 · 当前选定成片</small>:shot&&<small>{shot.durationSec} 秒{previewCandidate?' · 当前有效候选':' · 尚无视频候选'}</small>}</div>{workflowStage==='video'&&previewCut?<video controls preload="metadata" src={media(previewCut.media.hash)}/>:previewCandidate?<video controls preload="metadata" src={media(previewCandidate.media.hash)}/>:previewAsset?<img src={media(previewAsset.hash)} alt={`${shot.title}参考图`}/>:<div className="preview-empty">选择镜头或导入参考图后，这里显示预览</div>}</div></div>
-          </section>
           <section id="script-stage" className={`story-card focus-card ${inspectorMode==='script'?'card-active':''}`} role="button" tabIndex={0} aria-label="打开故事剧本详情" onClick={()=>navigateStage('script')} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();navigateStage('script');}}}>
             <div className="section-head"><div><h2>1 · 故事、剧本与对白</h2><small className="muted">内容摘要与完成度</small></div><Badge>{stageStatus('script')==='running'?'生成中':p.script.trim()?'已就绪':'待编写'}</Badge></div>
             <div className="stat-tiles"><div><small>故事梗概</small><b>{draft?.plot?.trim()?`${draft.plot.trim().length} 字`:'待填写'}</b></div><div><small>剧本</small><b>{draft?.script?.trim()?`${draft.script.trim().split(/\n+/).filter(Boolean).length} 段`:'待编写'}</b></div><div><small>对白总稿</small><b>{draft?.dialogue?.trim()?`${draft.dialogue.trim().length} 字`:'待填写'}</b></div></div>
