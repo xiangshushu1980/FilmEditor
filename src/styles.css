@@ -116,3 +116,55 @@
 .inspector .film-pi-heading{display:none}
 .inspector .film-pi-list{margin-top:4px}
 @media(max-width:760px){.overview-content{grid-template-columns:1fr}.overview-preview{grid-template-rows:auto 200px}.stat-tiles{grid-template-columns:repeat(3,minmax(0,1fr))}.shot-list{grid-template-columns:repeat(2,minmax(0,1fr))}.focus-shot .order-buttons{opacity:.75}.overview-conclusion{flex-wrap:wrap}.overview-conclusion strong{flex:1 1 170px}.overview-conclusion p{flex:1 1 100%;order:3}}
+
+/* Owner: Sean — reusable expandable record cards; visual behavior adapted from comfyui-browser file cards. */
+.record-group{display:grid;gap:8px;margin:14px 0}
+.record-group>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:0 0 5px;border:0;font-weight:600;color:#c7d5da}
+.record-group>summary small{color:var(--muted);font-weight:400;white-space:nowrap}
+.record-group[open]>summary{margin-bottom:2px}
+.record-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr));gap:8px}
+.record-card{position:relative;min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:9px;background:#111d26;transition:border-color .16s,background .16s,box-shadow .16s}
+.record-card:hover{border-color:#53717c;background:#14232c}
+.record-card.selected{border-color:#58cabb;box-shadow:inset 0 0 0 1px #58cabb,0 0 12px #36cbbb16}
+.record-card-main{display:flex;align-items:center;gap:8px;min-width:0;padding:9px 10px}
+.record-card-main[role=button]{cursor:pointer}
+.record-card-main[role=button]:focus-visible{outline:2px solid #58e0cf;outline-offset:-2px;border-radius:8px}
+.record-card-copy{display:grid;gap:5px;flex:1;min-width:0}
+.record-card-copy small{color:var(--muted);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.record-card-title{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.record-card-title strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+.record-card-actions{display:flex;align-items:center;gap:2px;flex:none}
+.record-card-actions button{min-width:30px;min-height:30px;padding:2px 6px}
+.shot-list .record-card{min-height:98px}
+.shot-list .record-card-main{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:start;gap:8px;padding:10px}
+.shot-list .record-card-leading{grid-column:1;grid-row:1;font-size:17px;color:#a8c1cc}
+.shot-list .record-card-copy{grid-column:2;grid-row:1}
+.shot-list .record-card-title{align-items:start;justify-content:space-between;gap:5px}
+.shot-list .record-card-title strong{font-size:12px;white-space:normal;line-height:1.35}
+.shot-list .record-card-actions{grid-column:1/-1;justify-content:flex-end;margin-top:0}
+.shot-list .record-card-actions button{min-height:30px;font-size:10px}
+.record-details{display:grid;gap:12px;min-width:0}
+.record-details dl{display:grid;grid-template-columns:minmax(90px,.35fr) minmax(0,1fr);gap:7px 10px;margin:0;font-size:11px}
+.record-details dt{color:var(--muted)}
+.record-details dd{margin:0;overflow-wrap:anywhere}
+.record-details details{min-width:0}
+.record-details .mono{max-height:40vh;overflow:auto;margin-top:8px;padding:10px;border-radius:7px;background:#0d1820}
+
+/* Owner: Sean — shared button scale and restrained interaction motion, informed by Hivemind UI patterns. */
+:root{--control-height:36px;--control-height-small:30px;--control-radius:8px;--control-transition:background .15s,border-color .15s,box-shadow .15s,transform .12s}
+button{min-height:var(--control-height);border-radius:var(--control-radius);transition:var(--control-transition)}
+button:active:not(:disabled){transform:translateY(1px) scale(.99)}
+button.primary{position:relative;overflow:hidden}
+button.primary:hover:not(:disabled){box-shadow:0 0 0 1px #79eddd55,0 3px 14px #36cbbb22}
+button.primary::after{content:"";position:absolute;inset:-60% auto -60% -45%;width:32%;transform:translateX(-170%) rotate(18deg);background:linear-gradient(90deg,transparent,#ffffff38,transparent);pointer-events:none;transition:transform .72s ease}
+button.primary:hover:not(:disabled)::after{transform:translateX(560%) rotate(18deg)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.quiet{min-height:var(--control-height-small)}
+.sidebar-toggle,.shotlist-head .row button{min-height:var(--control-height-small)}
+.focus-card.card-active,.record-card.selected{animation:selection-glow 4s ease-in-out infinite alternate}
+@keyframes selection-glow{from{box-shadow:inset 0 0 0 1px #58cabb,0 0 4px #36cbbb0a}to{box-shadow:inset 0 0 0 1px #58cabb,0 0 13px #36cbbb20}}
+.generation-banner{position:relative;isolation:isolate;overflow:hidden}
+.generation-banner::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;background:linear-gradient(90deg,transparent,#58e0cf,transparent);background-size:35% 100%;background-repeat:no-repeat;animation:border-beam 2.8s linear infinite;pointer-events:none}
+@keyframes border-beam{from{background-position:-35% 0}to{background-position:135% 0}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+@media(max-width:760px){.record-list{grid-template-columns:1fr}.shot-list .record-card-main{grid-template-columns:24px minmax(0,1fr)}.overview-conclusion{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.overview-conclusion>small{grid-column:1;grid-row:1}.overview-conclusion strong{grid-column:1;grid-row:2;min-width:0}.overview-conclusion button{grid-column:2;grid-row:1/3}.overview-conclusion p{grid-column:1/-1;grid-row:3;width:auto;max-width:100%;align-self:flex-start}}

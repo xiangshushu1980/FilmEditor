@@ -1,6 +1,8 @@
 // Owner: Sean — one-page review/editor UI, independent of Reference workspace.
 import FilmPiPanel from './FilmPiPanel.jsx';
 import VisualAnchorEditor from './VisualAnchorEditor.jsx';
+import RecordCard from './RecordCard.jsx';
+import ExpandableRecordGroup from './ExpandableRecordGroup.jsx';
 import React,{useState,useEffect,useRef,useId} from 'react';
 const label={queued:'排队',submitting:'提交中',running:'执行中',recovering:'恢复中',uncertain:'待核查',succeeded:'已完成',failed:'失败',interrupted:'已中断',conflict:'输入已变化',empty:'待生成',draft:'待确认',stale:'前序已变化',confirmed:'已确认'};
 const stageNames={spatial:'拍摄本 · 空间与全部提示词',script:'剧本与对白',shots:'拍摄本',prompt:'拍摄本 · 逐镜提示词',revision:'拍摄本 · 提示词修订',assemble:'视频合成',plan:'旧版完整编写'};
@@ -16,6 +18,17 @@ function Field({label:caption,children}) {
   return <div className="field"><label htmlFor={controlId}>{caption}</label>{single?React.cloneElement(children,{id:controlId}):children}</div>;
 }
 function Badge({children,tone=''}) {return <span className={`badge ${tone}`}>{children}</span>;}
+function RecordDetails({value}) {
+  if(!value)return <p className="muted compact">正在读取记录…</p>;
+  if(value.error)return <p className="error-text">{value.error}</p>;
+  const sections=['input','result','response','content'].filter(key=>value[key]!==undefined&&value[key]!==null);
+  const facts=Object.entries(value).filter(([key,item])=>!sections.includes(key)&&!['owner','id','projectId'].includes(key)&&['string','number','boolean'].includes(typeof item));
+  const captions={kind:'类型',status:'状态',revision:'修订号',createdAt:'创建时间',finishedAt:'完成时间',at:'记录时间',shotId:'镜头 ID',model:'模型'};
+  return <div className="record-details">
+    {!!facts.length&&<dl>{facts.map(([key,item])=><React.Fragment key={key}><dt>{captions[key]||key}</dt><dd>{key==='status'?label[item]||item:String(item)}</dd></React.Fragment>)}</dl>}
+    {sections.map(key=><details key={key} open={key!=='response'}><summary>{{input:'输入与上下文',result:'生成结果',response:'模型响应',content:'版本内容'}[key]}</summary><pre className="mono">{JSON.stringify(value[key],null,2)}</pre></details>)}
+  </div>;
+}
 function Prompt({text}) {return <pre className="prompt-read">{text.split(/(<(?:Subject|Picture|Audio|Video) \d+>|\[Shot \d+\]|(?:subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music):)/g).map((s,i)=>/<(?:Subject|Picture|Audio|Video)/.test(s)?<mark key={i}>{s}</mark>:/^\[Shot|:$/.test(s)?<b key={i}>{s}</b>:<React.Fragment key={i}>{s}</React.Fragment>)}</pre>;}
 function GenerationProgress({candidate,active=false}) {
   const [clock,setClock]=useState(Date.now());
@@ -32,6 +45,7 @@ export default function App() {
   const [shotId,setShotId]=useState(''),[shotDraft,setShotDraft]=useState(null),[tab,setTab]=useState('edit'),[workflowStage,setWorkflowStage]=useState('script'),[inspectorMode,setInspectorMode]=useState('script'),[scriptTab,setScriptTab]=useState('plot');
   const [modal,setModal]=useState(''),[source,setSource]=useState(null),[selection,setSelection]=useState([]),[search,setSearch]=useState('');
   const [updates,setUpdates]=useState([]),[entityId,setEntityId]=useState(''),[zoom,setZoom]=useState(''),[newTitle,setNewTitle]=useState(''),[record,setRecord]=useState(null),[deleteTarget,setDeleteTarget]=useState(null);
+  const [selectedRecord,setSelectedRecord]=useState(null),[recordDetails,setRecordDetails]=useState({});
   const [feedback,setFeedback]=useState(null),[proposal,setProposal]=useState(null),[proposalPrompt,setProposalPrompt]=useState(''),[revisionJob,setRevisionJob]=useState('');
   const [spatialProposal,setSpatialProposal]=useState(null),[spatialDraft,setSpatialDraft]=useState(null),[spatialJob,setSpatialJob]=useState(''),[spatialNotes,setSpatialNotes]=useState(''),[spatialValidation,setSpatialValidation]=useState(null),[sceneDraft,setSceneDraft]=useState('');
   const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''}),lastGenerationRef=useRef(null);
@@ -60,7 +74,9 @@ export default function App() {
   const stageStatus=(stage,target)=>p?.jobs?.some(j=>j.kind===stage&&j.status==='running'&&(!target||j.shotId===target))?'running':stage==='prompt'?p?.stages?.prompts.find(v=>v.shotId===target)?.status:p?.stages?.[stage];
   const media=h=>`/api/projects/${p.id}/media/${h}`;
   function apply(value,reset=true) {
+    const projectChanged=projectRef.current&&projectRef.current!==value.id;
     projectRef.current=value.id;setP(value);localStorage.setItem('sean-film-project',value.id);
+    if(projectChanged){setSelectedRecord(null);setRecordDetails({});setInspectorMode('script');}
     const url=new URL(location.href);url.searchParams.set('project',value.id);history.replaceState(null,'',url);
     if(reset){setDraft({title:value.title,plot:value.plot,script:value.script,dialogue:value.dialogue,settings:value.settings});setSceneDraft(value.spatialPlan?.scenePlan||'');}
     setShotId(current=>value.shots.some(s=>s.id===current)?current:value.shots[0]?.id||'');
@@ -92,6 +108,12 @@ export default function App() {
     const value=await api(`/projects/${p.id}`,{revision:p.revision,...draft,...(shotDirty?{shotEdits:[shotDraft]}:{}),...(sceneDirty?{scenePlan:sceneDraft}:{})},'PATCH');apply(value);return value;
   }
   const generateStage=(stage,target)=>work('提交生成任务',async()=>{const current=await savedInput();await api(`/projects/${current.id}/stages/${stage}/generate`,{revision:current.revision,useCurrent:true,...(target?{shotId:target}:{})});apply(await api(`/projects/${current.id}`));setMessage('已按当前内容提交生成，输入版本和结果会保存到历史。');});
+  async function openRecord(key,title,route) {
+    setSelectedRecord({key,title});setInspectorMode('record');
+    if(recordDetails[key])return;
+    try {const value=await api(route,null,'GET');setRecordDetails(current=>({...current,[key]:value}));}
+    catch(error) {setRecordDetails(current=>({...current,[key]:{error:error.message}}));}
+  }
   const generateVideo=(options={})=>work('提交本镜视频',async()=>{const current=await savedInput();await api(`/projects/${current.id}/candidates`,{revision:current.revision,shotId,useCurrent:true,...options});apply(await api(`/projects/${current.id}`));setConfig(await api('/config'));setTab('history');setMessage('当前镜头已校验并提交视频生成，顶部显示实时状态。');});
   const openFeedback=c=>{setFeedback({candidateId:c.id,shotId:c.shotId,observed:'',desired:''});setProposal(null);setProposalPrompt('');setRevisionJob('');setModal('feedback');};
   const loadProposal=jobId=>work('读取修订稿',async()=>{const j=await api(`/projects/${p.id}/jobs/${jobId}`);setFeedback({...j.input.feedback,shotId:j.shotId});setRevisionJob(j.id);setProposal(j);setProposalPrompt(j.result?.prompt||'');setModal('feedback');});
@@ -185,8 +207,8 @@ export default function App() {
             <div className="section-head"><div><h2>1 · 故事、剧本与对白</h2><small className="muted">内容摘要与完成度</small></div><Badge>{stageStatus('script')==='running'?'生成中':p.script.trim()?'已就绪':'待编写'}</Badge></div>
             <div className="stat-tiles"><div><small>故事梗概</small><b>{draft?.plot?.trim()?`${draft.plot.trim().length} 字`:'待填写'}</b></div><div><small>剧本</small><b>{draft?.script?.trim()?`${draft.script.trim().split(/\n+/).filter(Boolean).length} 段`:'待编写'}</b></div><div><small>对白总稿</small><b>{draft?.dialogue?.trim()?`${draft.dialogue.trim().length} 字`:'待填写'}</b></div></div>
           </section>
-          {!!p.jobs?.length&&<details><summary>任务记录 · {p.jobs.length} 次{planningBusy?' · 正在生成':''}</summary>{[...p.jobs].reverse().map(j=><p key={j.id}>{stageNames[j.kind]||j.kind} · {j.shotId&&p.shots.find(s=>s.id===j.shotId)?.title} · {label[j.status]||j.status} · {new Date(j.createdAt).toLocaleString()}{j.error&&<span className="error-text"> · {j.error}</span>} <button className="quiet" onClick={()=>work('读取任务记录',async()=>{setRecord(await api(`/projects/${p.id}/jobs/${j.id}`));setModal('record');})}>查看输入与结果</button>{j.kind==='spatial'&&j.status==='succeeded'&&<button onClick={()=>readSpatial(j.id)}>审阅空间修订稿</button>}</p>)}</details>}
-          {!!p.planningVersions?.length&&<details><summary>创作版本历史 · {p.planningVersions.length} 份</summary>{[...p.planningVersions].reverse().map(v=><p key={v.id}>修订 {v.revision} · {new Date(v.at).toLocaleString()} · {v.kind} <button className="quiet" onClick={()=>work('读取创作版本',async()=>{setRecord(await api(`/projects/${p.id}/planning-versions/${v.id}`));setModal('record');})}>查看版本</button></p>)}</details>}
+          {!!p.jobs?.length&&<ExpandableRecordGroup title="任务记录" count={`${p.jobs.length} 次`} hint={planningBusy?'正在生成':''}>{[...p.jobs].reverse().map(j=>{const key=`job:${j.id}`;return <RecordCard key={j.id} title={stageNames[j.kind]||j.kind} meta={`${j.shotId?p.shots.find(s=>s.id===j.shotId)?.title+' · ':''}${new Date(j.createdAt).toLocaleString()}`} status={<Badge tone={j.status==='failed'?'warn':j.status==='succeeded'?'good':''}>{label[j.status]||j.status}</Badge>} selected={inspectorMode==='record'&&selectedRecord?.key===key} onSelect={()=>openRecord(key,stageNames[j.kind]||j.kind,`/projects/${p.id}/jobs/${j.id}`)} actions={j.kind==='spatial'&&j.status==='succeeded'&&<button className="quiet" title="审阅空间修订稿" aria-label="审阅空间修订稿" onClick={()=>readSpatial(j.id)}>审阅</button>}/>;})}</ExpandableRecordGroup>}
+          {!!p.planningVersions?.length&&<ExpandableRecordGroup title="创作版本" count={`${p.planningVersions.length} 份`}>{[...p.planningVersions].reverse().map(v=>{const key=`version:${v.id}`;return <RecordCard key={v.id} title={`修订 ${v.revision}`} meta={`${new Date(v.at).toLocaleString()} · ${v.kind}`} selected={inspectorMode==='record'&&selectedRecord?.key===key} onSelect={()=>openRecord(key,`修订 ${v.revision}`,`/projects/${p.id}/planning-versions/${v.id}`)}/>;})}</ExpandableRecordGroup>}
           <div id="shotlist-stage" className="section-head shotlist-head"><div><h2>2 · 拍摄本与提示词</h2><small className="muted">共用空间、角色站位、逐镜动作和提示词统一在此编辑；视频提交时自动校验当前镜头</small></div><div className="row"><button disabled={!!busy||planningBusy||!draft?.script.trim()} onClick={()=>generateStage('shots')}>生成拍摄本 ↗</button><button disabled={!!busy||!entities.length||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot()}>＋ 添加镜头</button></div></div>
           <section className={`story-card focus-card spatial-summary ${inspectorMode==='spatial'?'card-active':''}`} role="button" tabIndex={0} aria-label="打开共用空间详情" onClick={()=>{setInspectorMode('spatial');setWorkflowStage('shots');}} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setInspectorMode('spatial');setWorkflowStage('shots');}}}>
             <div className="section-head"><div><h3>共用空间与角色站位</h3><small className="muted">全片空间锚点与镜间连续性</small></div><Badge tone={p.stages?.spatial==='confirmed'?'good':'warn'}>{p.stages?.spatial==='stale'?'需更新':p.spatialPlan?'已保存':'待建立'}</Badge></div>
@@ -194,9 +216,8 @@ export default function App() {
           </section>
           <div className="shot-list">{p.shots.map((s,i)=>{
             const current=p.candidates.filter(c=>c.shotId===s.id),selected=current.find(c=>c.id===s.selectedCandidateId&&c.isCurrent),valid=current.filter(c=>c.isCurrent&&c.status==='succeeded'),c=selected||valid.at(-1),running=current.some(c=>c.isCurrent&&['queued','running','submitting','recovering','uncertain'].includes(c.status)),state=running?'生成中':selected?'已选定':valid.length?'待选片':current.some(c=>c.status==='succeeded')?'需重新生成':current.at(-1)?.status==='failed'?'生成失败':'待生成';
-            return <article className={`shot-card focus-shot ${shotId===s.id?'selected':''}`} key={s.id} onClick={()=>chooseShot(s.id)} tabIndex={0} role="button" aria-label={`选择镜头 ${i+1} ${s.title}`} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();chooseShot(s.id);}}}>
-              <span className="shot-number">{String(i+1).padStart(2,'0')}</span><div className="shot-body"><div className="section-head"><h3>{s.title}</h3><Badge tone={c?'good':'warn'}>{state}</Badge></div><div className="shot-meta"><span>{s.durationSec} 秒</span><span>{current.length} 个候选</span><span>{s.entityIds.length} 个出镜实体</span></div></div><div className="order-buttons"><button className="quiet" aria-label="在此镜后插入镜头" disabled={!!busy||dirty||planningBusy||p.shots.length>=40} onClick={e=>{e.stopPropagation();addShot(s.id);}}>＋</button><button className="quiet" aria-label={`删除镜头 ${i+1}`} disabled={deletingBlocked||activeGeneration?.shotId===s.id&&activeGeneration?.projectId===p.id} onClick={e=>{e.stopPropagation();requestDelete(s);}}>删除</button><button className="quiet" aria-label="镜头前移" disabled={i===0||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i-1);}}>↑</button><button className="quiet" aria-label="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={e=>{e.stopPropagation();ordered(i,i+1);}}>↓</button></div>
-            </article>;
+            return <RecordCard key={s.id} className="shot-card focus-shot" leading={<span className="shot-number">{String(i+1).padStart(2,'0')}</span>} title={s.title} meta={<><span>{s.durationSec} 秒</span><span>{current.length} 个候选</span><span>{s.entityIds.length} 个出镜实体</span></>} status={<Badge tone={c?'good':'warn'}>{state}</Badge>} selected={shotId===s.id&&inspectorMode==='shot'} onSelect={()=>chooseShot(s.id)} ariaLabel={`选择镜头 ${i+1} ${s.title}`} actions={<><button className="quiet" aria-label="在此镜后插入镜头" title="在此镜后插入镜头" disabled={!!busy||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot(s.id)}>＋</button><button className="quiet" aria-label={`删除镜头 ${i+1}`} title="删除镜头" disabled={deletingBlocked||activeGeneration?.shotId===s.id&&activeGeneration?.projectId===p.id} onClick={()=>requestDelete(s)}>删除</button><button className="quiet" aria-label="镜头前移" title="镜头前移" disabled={i===0||!!busy||dirty} onClick={()=>ordered(i,i-1)}>↑</button><button className="quiet" aria-label="镜头后移" title="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={()=>ordered(i,i+1)}>↓</button></>}/>;
+            return <RecordCard key={s.id} className="shot-card focus-shot" leading={<span className="shot-number">{String(i+1).padStart(2,'0')}</span>} title={s.title} meta={<><span>{s.durationSec} 秒</span><span>{current.length} 个候选</span><span>{s.entityIds.length} 个出镜实体</span></>} status={<Badge tone={c?'good':'warn'}>{state}</Badge>} selected={shotId===s.id&&inspectorMode==='shot'} onSelect={()=>chooseShot(s.id)} ariaLabel={`选择镜头 ${i+1} ${s.title}`} actions={<><button className="quiet" aria-label="在此镜后插入镜头" title="在此镜后插入镜头" disabled={!!busy||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot(s.id)}>＋</button><button className="quiet" aria-label={`删除镜头 ${i+1}`} title="删除镜头" disabled={deletingBlocked||activeGeneration?.shotId===s.id&&activeGeneration?.projectId===p.id} onClick={()=>requestDelete(s)}>删除</button><button className="quiet" aria-label="镜头前移" title="镜头前移" disabled={i===0||!!busy||dirty} onClick={()=>ordered(i,i-1)}>↑</button><button className="quiet" aria-label="镜头后移" title="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={()=>ordered(i,i+1)}>↓</button></>}/>;
           })}{!p.shots.length&&<div className="empty"><span className="empty-icon">▤</span><h3>拍摄本等待你的故事</h3><p>使用当前剧本生成拍摄本。</p></div>}</div>
           {!!p.planWarnings?.length&&<details className="plan-warnings"><summary>生成时发现 {p.planWarnings.length} 项问题，可编辑后重新生成</summary>{p.planWarnings.map(w=><p key={w.shotId} className="error-text">{w.title}：{w.message}</p>)}</details>}
           <section id="video-stage" className={`story-card focus-card video-summary ${inspectorMode==='shot'&&tab==='history'?'card-active':''}`} role="button" tabIndex={0} aria-label="打开视频候选详情" onClick={()=>navigateStage('video')} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();navigateStage('video');}}}>
@@ -206,8 +227,9 @@ export default function App() {
           </section>
         </>}
       </section>
-      <aside id="shot-inspector" className="inspector"><div className="section-head"><h2>{inspectorMode==='pi'?'PIWeb 对话':inspectorMode==='script'?'故事与剧本':inspectorMode==='spatial'?'全片空间详情':inspectorMode==='shot'&&tab==='history'?'视频候选':'镜头详情'}</h2>{inspectorMode==='shot'&&shot&&<Badge>{shot.durationSec}s</Badge>}</div>
+      <aside id="shot-inspector" className="inspector"><div className="section-head"><h2>{inspectorMode==='pi'?'PIWeb 对话':inspectorMode==='record'?selectedRecord?.title||'记录详情':inspectorMode==='script'?'故事与剧本':inspectorMode==='spatial'?'全片空间详情':inspectorMode==='shot'&&tab==='history'?'视频候选':'镜头详情'}</h2>{inspectorMode==='shot'&&shot&&<Badge>{shot.durationSec}s</Badge>}</div>
         {inspectorMode==='pi'&&<FilmPiPanel project={p}/>}
+        {inspectorMode==='record'&&selectedRecord&&<RecordDetails value={recordDetails[selectedRecord.key]}/>}
         {inspectorMode==='script'&&<>
           <Field label="短片名称"><input value={draft?.title||''} onChange={e=>setField('title',e.target.value)}/></Field>
           <nav className="tabs"><button className={scriptTab==='plot'?'selected':''} onClick={()=>setScriptTab('plot')}>故事梗概</button><button className={scriptTab==='script'?'selected':''} onClick={()=>setScriptTab('script')}>剧本</button><button className={scriptTab==='dialogue'?'selected':''} onClick={()=>setScriptTab('dialogue')}>对白</button></nav>
@@ -239,7 +261,7 @@ export default function App() {
             {p.cuts.length>0&&<section className="cut-history"><h3>成片历史 · {p.cuts.length} 版</h3>{[...p.cuts].reverse().map(c=><details key={c.id} open={c.id===p.selectedCutId}><summary>成片 {new Date(c.createdAt).toLocaleString()} · {Number(c.probe.format.duration).toFixed(2)} 秒{c.id===p.selectedCutId&&p.cutStale?' · 来源已过期':''}</summary><video controls preload="metadata" src={media(c.media.hash)}/><a href={media(c.media.hash)} download={`sean_cut_${c.id}.mp4`}>下载 MP4 ↗</a></details>)}</section>}</>}
         </>}
         </>}
-        {inspectorMode!=='pi'&&<div className="inspector-actions">
+        {inspectorMode!=='pi'&&inspectorMode!=='record'&&<div className="inspector-actions">
           {inspectorMode==='shot'?<button disabled={!!busy||!dirty} onClick={saveShot}>保存修改{dirty?' •':''}</button>:<button disabled={!!busy||!dirty} onClick={save}>保存修改{dirty?' •':''}</button>}
           {inspectorMode==='script'&&<button disabled={!!busy||planningBusy||!entities.length||!draft?.plot.trim()} onClick={()=>generateStage('script')}>生成剧本 ↗</button>}
           {inspectorMode==='shot'&&workflowStage==='video'&&<button className="primary" disabled={!!generationDisabledReason} title={generationDisabledReason||'生成新视频候选并保留历史'} onClick={()=>generateVideo()}>生成新候选 ↗</button>}

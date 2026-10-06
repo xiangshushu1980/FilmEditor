@@ -72,6 +72,14 @@ hive-resource register service --id service:sean-film-editor --name 'Sean Film E
 
 提示词契约来自 [.pi H3 skill](../.pi/skills/h3-prompt-writing/SKILL.md)、[Ref2VA官方格式](../.pi/skills/h3-prompt-writing/references/ref-en.txt)与[项目规则17](../docs/17_h3_prompt_writing_rules.md)。适配器和参数参照[已验证实验](../experiments/ai_film_editor_flow_20261003/README.md)及其 manifest。已测 H3 输出存在时长扩展（4秒请求实际4.458秒），此应用保留实际媒体并在合成时用 ffprobe 时长；NativeAudioLock 不代表已验收逐样本音频一致。
 
+## 编辑器组件约定
+
+- `src/RecordCard.jsx`：紧凑、可选中的条目卡；点整张卡选择记录并切换右侧详情。卡片只放标题、状态与少量索引信息，不重复右侧正文。
+- `src/ExpandableRecordGroup.jsx`：折叠/展开一组历史卡片，适用于任务记录、创作版本及后续实体变更历史。
+- 详情由右侧检查器展示；卡片动作使用图标/短标签、`aria-label` 和 `title`，不再添加“查看详情”链接。
+- 常规按钮高 36px，次级轻按钮 30px；主要动作保留清楚的文字。选择态微光、主按钮悬停扫光、生成状态边缘流光参考 Hivemind 的 GlowBorder、ShimmerButton、BorderBeam，均支持减少动态效果偏好。Hivemind 的 Vue/Tailwind 组件不直接复制；资源仪表盘依赖 ECharts 且当前页面没有对应资源指标，因此不引入。
+- 概况与统计采用紧凑分块布局；新增实体、历史或候选列表时复用以上卡片与分组组件。
+
 ## 数据与恢复
 
 默认存储 `film-editor/.data/film.sqlite` + `.data/blobs/<sha256>`，可用 `FILM_DATA_DIR` 指定持久位置。重启应用保留项目与全部媒体；SQLite WAL/事务和 revision 校验保护并发编辑，SQL trigger 禁止修改/删除快照和成片、禁止改候选原输入。候选状态与追加事件保留执行演进，项目 JSON 导出可审查；JSON **不包含素材字节**。
