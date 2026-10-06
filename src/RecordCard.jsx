@@ -19,7 +19,7 @@ export default function RecordCard({
     event.preventDefault();
     activate();
   };
-  return <article className={`record-card ${selected ? 'selected' : ''} ${className}`}>
+  return <article className={`record-card ${selected ? 'selected' : ''} ${className}`} onClick={event => { if (event.target === event.currentTarget) activate(); }}>
     <div
       className="record-card-main"
       role={onSelect ? 'button' : undefined}
