@@ -4,12 +4,14 @@ Owner: Sean。Node 24 + React/Vite + Express；单页沿用 Reference 实体编�
 
 任务与验证范围见 [交付记录](DELIVERY.md)；Task Center：`remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1`。
 
+comfy-ops 中迁出的历史证据与决定记录见 [历史记录](docs/comfy-ops-history.md)。
+
 2026-10-05 调整的目标与验收范围见 [固定工作流、互动提示词与 Agent 调试目标](WORKFLOW_GOAL.md)：效果由用户判断，本轮聚焦流程、提示词和程序诊断。用户已确认按该范围执行。下文早期 MVP 的交付记录不替代该范围。
 
 ## 安装与启动
 
 ```bash
-cd /home/sean/projects/comfy-ops/film-editor
+cd /home/sean/projects/FilmEditor
 npm ci
 cp .env.example .env
 # 编辑 .env 的 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY。
@@ -26,7 +28,7 @@ systemctl --user status sean-film-editor.service
 systemctl --user stop sean-film-editor.service
 ```
 
-该服务为本次启动的 transient unit；系统重启后使用上面的 `npm start`，或在 film-editor 目录中重新托管：
+该服务为本次启动的 transient unit；系统重启后使用上面的 `npm start`，或在项目目录中重新托管：
 
 ```bash
 systemd-run --user --unit=sean-film-editor --description='Sean Film Editor' \

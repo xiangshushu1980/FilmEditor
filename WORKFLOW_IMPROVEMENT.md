@@ -39,6 +39,6 @@ SQLite `film_method_versions` 保存不可变版本，`film_method_proposals` �
 
 ## 验证
 
-服务端回归：从仓库根执行 `node --test film-editor/server/*.test.mjs`；前端构建：`cd film-editor && npm run build`。
+服务端回归：从仓库根执行 `node --test server/*.test.mjs`；前端构建：`npm run build`。
 
-可重复的源码采用/恢复验收：`node .pi/tasks/remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1/verify-program-workbench.mjs`，只修改临时副本。真实 Agent/固定 LLM 验收证据另存本任务交付记录；不以视频或图片视觉质量作为本轮通过标准。
+源码采用/恢复的历史验证脚本保存在 comfy-ops 的本地任务归档中，未随应用仓库迁移；历史结果和边界见 [迁移历史记录](docs/comfy-ops-history.md)。真实 Agent/固定 LLM 验收证据另存本任务交付记录；不以视频或图片视觉质量作为本轮通过标准。

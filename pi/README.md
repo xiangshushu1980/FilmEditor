@@ -6,7 +6,7 @@ Load the extension in the actual film workspace, with the existing PI/PiWeb host
 
 ```sh
 cd /absolute/path/to/film-workspace
-pi -e /home/sean/projects/comfy-ops/film-editor/pi/film-extension.mjs
+pi -e /home/sean/projects/FilmEditor/pi/film-extension.mjs
 ```
 
 For continued use the workspace owner's project `.pi/settings.json` can list that absolute path in `extensions`; merge with existing settings instead of replacing them. No user settings are changed by the extension. Host creation and routing remain the host's responsibility.
@@ -58,7 +58,7 @@ The independent PiWeb service must inherit the credentials required by that prov
 Run focused tests without a model, PiWeb, Coordinator, GPU or production service:
 
 ```sh
-node --test film-editor/pi/*.test.mjs
+node --test pi/*.test.mjs
 ```
 
 Tests cover host identity, on-demand catalog, write metadata, session/binding changes, mismatched paths/origins, symlinks, credential redaction, malformed responses, failed writes, concurrent connection invalidation, mock PI hooks, CLI JSON/cache/owner initialization, actual installed SDK extension loading, native catalog discovery, native skill reads and command expansion. They do not establish a real PiWeb session or submit a video job.
