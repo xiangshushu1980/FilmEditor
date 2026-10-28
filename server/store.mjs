@@ -4,6 +4,7 @@ import {Diagnostics} from './diagnostics.mjs';
 import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 export const id = () => randomUUID();
 export const now = () => new Date().toISOString();
 export const hash = x => createHash('sha256').update(x).digest('hex');
@@ -12,9 +13,11 @@ function sort(x) { return Array.isArray(x) ? x.map(sort) : x && typeof x === 'ob
 export const fingerprint = x => hash(canonical(x));
 export const voiceReferenceVersion='sean-entity-voice@1';
 const voicePolicy=(p,s)=>(s.dialogue||[]).length&&!s.nativeAudioAssetId?{voiceReferencePolicy:{version:voiceReferenceVersion,snapshots:p.entities,speakerOrder:[...new Set(p.shots.flatMap(v=>(v.dialogue||[]).map(d=>d.speaker)))]}}:{};
+function inputFieldMap(p){const fields=new Map([['title',p.title],['plot',p.plot],['script',p.script],['dialogue',p.dialogue],['settings.targetDurationSec',p.settings?.targetDurationSec],['settings.render',p.settings?.render],['spatialPlan',p.spatialPlan],['visualAnchors',p.visualAnchors]]);for(const [entityId,value] of Object.entries(p.entities||{}))fields.set(`entities.${entityId}`,value);for(const shot of p.shots||[])for(const [key,value] of Object.entries(shot))if(!['selectedCandidateId','stale'].includes(key))fields.set(`shots.${shot.id}.${key}`,value);return fields;}
 export function fail(message, status=400) { throw Object.assign(new Error(message), {status}); }
-export class Store {
+export class Store extends EventEmitter {
   constructor(root) {
+    super();
     this.root=root; this.blobs=path.join(root,'blobs'); mkdirSync(this.blobs,{recursive:true});
     this.db=new DatabaseSync(path.join(root,'film.sqlite')); this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, body TEXT NOT NULL);
@@ -26,6 +29,8 @@ export class Store {
       CREATE TRIGGER IF NOT EXISTS frozen_planning_update BEFORE UPDATE ON planning_versions BEGIN SELECT RAISE(ABORT,'immutable planning version'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_planning_delete BEFORE DELETE ON planning_versions BEGIN SELECT RAISE(ABORT,'immutable planning version'); END;
       CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, at TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS film_input_updates(id TEXT PRIMARY KEY,projectId TEXT NOT NULL,revision INTEGER NOT NULL,baseRevision INTEGER NOT NULL,fieldPath TEXT NOT NULL,beforeValue TEXT,afterValue TEXT,status TEXT NOT NULL,sourceKind TEXT NOT NULL,createdAt TEXT NOT NULL,updatedAt TEXT NOT NULL,handledBy TEXT,jobId TEXT,lastError TEXT);
+      CREATE INDEX IF NOT EXISTS film_input_updates_project_status ON film_input_updates(projectId,status,revision);
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_update BEFORE UPDATE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_snapshot_delete BEFORE DELETE ON snapshots BEGIN SELECT RAISE(ABORT,'immutable snapshot'); END;
       CREATE TRIGGER IF NOT EXISTS frozen_candidate_input BEFORE UPDATE OF input ON candidates BEGIN SELECT RAISE(ABORT,'immutable candidate input'); END;
@@ -38,9 +43,9 @@ export class Store {
   get(projectId) { const r=this.db.prepare('SELECT body FROM projects WHERE id=?').get(projectId); if(!r)fail('项目不存在',404);return JSON.parse(r.body); }
   list() { return this.db.prepare('SELECT body FROM projects ORDER BY rowid DESC').all().map(r=>JSON.parse(r.body)); }
   save(p) {p.revision++;p.updatedAt=now();this.db.prepare('INSERT INTO projects VALUES(?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body').run(p.id,JSON.stringify(p));return p;}
-  edit(projectId,revision,fn,kind='edit') {return this.transaction(()=>{
+  edit(projectId,revision,fn,kind='edit') {let updateEvent=null;const result=this.transaction(()=>{
     const p=this.get(projectId);if(p.revision!==revision)fail('项目已被更新，请刷新后重试',409);
-    ensurePipeline(p);const previous=planningContent(p),before=fingerprint(previous);
+    ensurePipeline(p);const previous=planningContent(p),previousFields=inputFieldMap(p),before=fingerprint(previous);
     fn(p);
     // Explicit prompt edits count as a human revision against current inputs.
     for(const s of p.shots) {
@@ -48,13 +53,26 @@ export class Store {
       if(old&&old.prompt!==s.prompt&&!kind.startsWith('pipeline-'))p.pipeline.promptInputs[s.id]=promptSourceHash(p,s);
     }
     const next=planningContent(p);
+    const nextFields=inputFieldMap(p),changedFields=[];
     if(before!==fingerprint(next)) {
       this.planningVersion(p.id,previous,'before:'+kind,p.revision);
       this.planningVersion(p.id,next,kind,p.revision+1);
       if(approvalHash(p)!==p.approval?.hash)p.approval=null;
     }
-    this.event(p.id,kind,{revision:p.revision+1});return this.save(p);
-  });}
+    if(!/^(pipeline-|agent-|system-)/.test(kind))for(const fieldPath of new Set([...previousFields.keys(),...nextFields.keys()])){
+      const beforeValue=previousFields.get(fieldPath),afterValue=nextFields.get(fieldPath);
+      if(fingerprint(beforeValue===undefined?{missing:true}:beforeValue)===fingerprint(afterValue===undefined?{missing:true}:afterValue))continue;
+      const change={id:id(),projectId:p.id,revision:p.revision+1,baseRevision:p.revision,fieldPath,beforeValue,afterValue,status:'pending',sourceKind:kind,createdAt:now(),updatedAt:now()};
+      this.db.prepare("UPDATE film_input_updates SET status='superseded',updatedAt=? WHERE projectId=? AND fieldPath=? AND status IN ('pending','notified','deferred','confirmed')").run(change.updatedAt,p.id,fieldPath);
+      this.db.prepare('INSERT INTO film_input_updates VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(change.id,change.projectId,change.revision,change.baseRevision,change.fieldPath,beforeValue===undefined?null:JSON.stringify(beforeValue),afterValue===undefined?null:JSON.stringify(afterValue),change.status,change.sourceKind,change.createdAt,change.updatedAt,null,null,null);
+      changedFields.push(change);
+    }
+    if(changedFields.length)updateEvent={projectId:p.id,revision:p.revision+1,baseRevision:p.revision,updateIds:changedFields.map(v=>v.id),fieldPaths:changedFields.map(v=>v.fieldPath),sourceKind:kind};
+    this.event(p.id,kind,{revision:p.revision+1,...(updateEvent?{updateIds:updateEvent.updateIds,fieldPaths:updateEvent.fieldPaths}:{})});return this.save(p);
+  });if(updateEvent)this.emit('film-input-updated',updateEvent);return result;}
+  filmInputUpdates(projectId,{activeOnly=false,limit=100}={}){this.get(projectId);const statuses=activeOnly?"AND status IN ('pending','notified','deferred','confirmed')":'';return this.db.prepare(`SELECT * FROM film_input_updates WHERE projectId=? ${statuses} ORDER BY revision DESC,fieldPath LIMIT ?`).all(projectId,limit).map(row=>({...row,beforeValue:row.beforeValue===null?null:JSON.parse(row.beforeValue),afterValue:row.afterValue===null?null:JSON.parse(row.afterValue)}));}
+  filmInputUpdateError(ids,message){const updatedAt=now();for(const updateId of ids)this.db.prepare("UPDATE film_input_updates SET lastError=?,updatedAt=? WHERE id=? AND status='pending'").run(String(message).slice(0,1000),updatedAt,updateId);}
+  updateFilmInput(ids,status,{handledBy=null,jobId=null,lastError=null}={}){const allowed=new Set(['notified','deferred','confirmed','applied']);if(!allowed.has(status))fail('无效的影片更新状态');if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length)fail('需要唯一的影片更新 ID',400);return this.transaction(()=>{const updatedAt=now(),rows=ids.map(updateId=>this.db.prepare('SELECT * FROM film_input_updates WHERE id=?').get(updateId));if(rows.some(row=>!row))fail('影片更新记录不存在',404);const projectId=rows[0].projectId;if(rows.some(row=>row.projectId!==projectId))fail('不能混合处理不同影片的更新',409);for(const row of rows){if(row.status==='superseded'||row.status==='applied')fail('该影片更新已被新版本取代或处理完成',409);if(status==='applied'&&row.status!=='confirmed')fail('必须先取得用户确认才能完成更新',409);this.db.prepare('UPDATE film_input_updates SET status=?,updatedAt=?,handledBy=COALESCE(?,handledBy),jobId=COALESCE(?,jobId),lastError=? WHERE id=?').run(status,updatedAt,handledBy,jobId,lastError,row.id);}return this.filmInputUpdates(projectId,{activeOnly:false,limit:500}).filter(row=>ids.includes(row.id));});}
   planningVersion(projectId,content,kind,revision) {const v={owner:'Sean',id:id(),projectId,at:now(),revision,kind,content};this.db.prepare('INSERT INTO planning_versions VALUES(?,?,?)').run(v.id,projectId,JSON.stringify(v));}
   planningVersions(projectId) {return this.db.prepare('SELECT body FROM planning_versions WHERE projectId=? ORDER BY rowid').all(projectId).map(r=>JSON.parse(r.body));}
   snapshot(s) { this.db.prepare('INSERT INTO snapshots VALUES(?,?,?)').run(s.id,s.projectId,JSON.stringify(s)); }

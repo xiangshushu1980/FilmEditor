@@ -19,12 +19,13 @@ import {setVisualAnchor,removeVisualAnchor} from './visual-anchors.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const url=z.string().url().refine(s=>{const u=new URL(s);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&!u.search&&!u.hash;},'需要无认证信息的 HTTP(S) 接口 URL');
 const localUrl=value=>{const parsed=url.parse(value);if(!['127.0.0.1','localhost'].includes(new URL(parsed).hostname))fail('Reference/ComfyUI 必须是本机服务');return parsed.replace(/\/$/,'');};
-const config={referenceUrl:localUrl(process.env.REFERENCE_URL||'http://127.0.0.1:4188'),comfyUrl:localUrl(process.env.COMFY_URL||'http://127.0.0.1:8188'),enableGpu:process.env.FILM_ENABLE_GPU==='1',llmKey:process.env.LLM_API_KEY||'',comfyOutputDir:process.env.COMFY_OUTPUT_DIR||'/home/sean/projects/ComfyUI/output'};
+const config={referenceUrl:localUrl(process.env.REFERENCE_URL||'http://127.0.0.1:4188'),comfyUrl:localUrl(process.env.COMFY_URL||'http://comfyui.localhost'),enableGpu:process.env.FILM_ENABLE_GPU==='1',llmKey:process.env.LLM_API_KEY||'',comfyOutputDir:process.env.COMFY_OUTPUT_DIR||'/home/sean/projects/ComfyUI/output'};
 const settingsSchema=z.object({llm:z.object({baseUrl:url,model:z.string().max(200),temperature:z.number().min(0).max(2)}).strict(),targetDurationSec:z.number().int().min(4).max(600),render:z.object({width:z.number().int().min(256).max(1344).multipleOf(64),height:z.number().int().min(256).max(768).multipleOf(64)}).strict()}).strict();
 const defaultSettings={llm:{baseUrl:process.env.LLM_BASE_URL||'https://api.openai.com/v1',model:process.env.LLM_MODEL||'',temperature:0.7},targetDurationSec:30,render:{width:1024,height:576}};
 const store=new Store(path.resolve(process.env.FILM_DATA_DIR||path.join(root,'.data')));
 store.recoverJobs();
 const activeJobs=new Set();
+const llmActivity=new Map();
 async function runJob(projectId,revision,kind,execute) {
   const key=`${projectId}:${kind}`;
   if(activeJobs.has(key))fail('同类任务正在执行，请等待',409);
@@ -59,6 +60,7 @@ app.post('/api/projects',(req,res)=>{
   store.save(p);store.event(p.id,'project-created',{title});res.status(201).json(store.view(p.id));
 });
 app.get('/api/projects/:id',(req,res)=>res.json(store.view(getId(req))));
+app.get('/api/projects/:id/llm-progress',(req,res)=>{const activity=llmActivity.get(getId(req));if(!activity)return res.json(null);if(req.query.detail==='1')return res.json(activity);const call=activity.calls.at(-1);res.json({...activity,calls:call?[{callId:call.callId,task:call.task,status:call.status,outputPreview:call.output.slice(-2400),outputLength:call.output.length,usage:call.usage,finishReason:call.finishReason}]:[]});});
 app.patch('/api/projects/:id',(req,res)=>{
   const b=z.object({revision:rev,title:z.string().trim().min(1).max(150),plot:z.string().max(40000),script:z.string().max(40000),dialogue:z.string().max(40000),settings:settingsSchema,scenePlan:z.string().trim().min(1).max(30000).optional(),shotEdits:z.array(shotSchema).max(40).optional()}).strict().parse(req.body);
   const p=store.edit(getId(req),b.revision,p=>{
@@ -120,9 +122,11 @@ function startPlanning(projectId,stage,b,{beforeApply,provenance:agentProvenance
   const methodSnapshot=new FilmMethods(store).snapshot(projectId);
   const job={owner:'Sean',id:id(),projectId,kind:stage,shotId:b.shotId||null,status:'running',createdAt:now(),input:{revision:p.revision,agentProvenance,method:{contentHash:methodSnapshot.contentHash,versions:methodSnapshot.versions.map(({text,...v})=>v)},content:planningContent(p),settings:p.settings,feedback:b.feedback,spatialNotes:b.spatialNotes,spatialRevision:b.spatialRevision,useCurrent:b.useCurrent||false,directorNotes:b.directorNotes}};
   activeJobs.add(key);try{store.job(job);}catch(e){activeJobs.delete(key);throw e;}
+  const activity={projectId,jobId:job.id,task:stage==='script'?'生成剧本与对白':stage==='shots'?'生成拍摄本':stage==='prompt'?'生成逐镜提示词':stage==='revision'?'反馈修订提示词':'生成空间与全片提示词',status:'preparing',startedAt:now(),calls:[]};llmActivity.set(projectId,activity);
+  const onProgress=event=>{if(event.type==='call-start'){activity.status='running';activity.calls.push({...event,status:'streaming',output:''});}else{const call=activity.calls.find(v=>v.callId===event.callId);if(call){if(event.type==='delta')call.output+=event.delta;else if(event.type==='call-finish')Object.assign(call,{status:'succeeded',usage:event.usage,finishReason:event.finishReason,responseId:event.responseId,finishedAt:now()});else if(event.type==='call-fail')Object.assign(call,{status:'failed',error:redact(event.error),finishedAt:now()});}}};
   void (async()=>{
     try {
-      const {result,provenance}=await generateStage(store,{...config,methodSnapshot},p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes);
+      const {result,provenance}=await generateStage(store,{...config,methodSnapshot},p,stage,b.shotId,response=>{job.response=response;store.job(job);},b.feedback,b.spatialNotes,b.spatialRevision,b.directorNotes,onProgress);
       job.result=result;job.response=provenance;store.job(job);
       if(beforeApply&&!['revision','spatial'].includes(stage))await beforeApply();
       if(!['revision','spatial'].includes(stage))store.edit(projectId,b.revision,current=>{
@@ -139,7 +143,8 @@ function startPlanning(projectId,stage,b,{beforeApply,provenance:agentProvenance
         store.event(projectId,'stage-generated',{stage,jobId:job.id,shotId:job.shotId,responseId:provenance.responseId,model:provenance.model,warnings:provenance.warnings});
       },'pipeline-generated-'+stage);
       store.job({...job,status:'succeeded',finishedAt:now(),output:{revision:store.get(projectId).revision}});
-    }catch(e){const diagnosticId=store.diagnostics.error(e,{projectId,jobId:job.id,revision:b.revision,stage});store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:redact(e.message),diagnosticId});}
+      activity.status='succeeded';activity.finishedAt=now();
+    }catch(e){const diagnosticId=store.diagnostics.error(e,{projectId,jobId:job.id,revision:b.revision,stage});store.job({...job,status:e.status===409?'conflict':'failed',finishedAt:now(),error:redact(e.message),diagnosticId});activity.status='failed';activity.error=redact(e.message);activity.finishedAt=now();}
     finally{activeJobs.delete(key);}
   })();
   return {jobId:job.id,stage,status:'running'};

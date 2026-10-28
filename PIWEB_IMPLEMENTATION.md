@@ -4,7 +4,27 @@ Owner: Sean。2026-10-05。任务 `remote-92ecb0d7-d1db-4bd5-8a3e-83732b7404f1`�
 
 ## 当前交付
 
-编辑器顶部「制作助手」进入 PI 对话设置。先建立制作工作区，再新建或继续对话。默认工作区是 `~/projects/film-production/films/<film UUID>`，按实例 ID、影片 UUID、绑定版本识别影片，不按标题猜测。不同对话共享实时影片资料，各自保留 PI 原生历史。
+### Agent 驱动首阶段：剧情 → 剧本与对白（2026-10-06）
+
+界面只编辑、保存和展示影片信息，不触发生成、采用、选片或合成。用户编辑保存后，服务端在 SQLite 事务中记录字段级更新并通知当前有效 PI controller；Agent 说明变化并询问现在处理还是稍后，确认后才调用对应固定工作流。第一阶段使用 `film-script` skill 和既有 `run_film_workflow(stage: "script")`。成功结果沿用自动保存、版本历史与 revision 冲突保护；编辑器读取新 revision 后显示 Agent 写回的剧本和对白。后续编辑会使同字段旧收件项被标记取代，并要求按当前值重新确认。
+
+这是分阶段接入的第一步。本阶段只验证剧本与对白；其他阶段仍待 PI 逐步接入和验证，UI 只编辑、保存和显示内容。收件箱通知本身不触发工作流，Agent 必须先取得用户明确确认；若用户只说“继续任务”且发现待处理更新，先询问现在处理还是延期。此次没有改变固定剧本生成方法或提示词，也没有加入场景一致性。PIWeb 面板展示已关联对话及收件箱；实际写入仍要求有效 PI 制作任务及其真实 Controller，不能用当前 Codex 开发任务代替。
+
+编辑器顶部「PIWeb 对话」打开影片关联的 PI 对话列表。创建时选择主对话或辅助对话：主对话必须由 Task Center claim 成功后才收到一条启动提示；辅助对话不自动发送提示、也不获得任务控制权。会话列表每 5 秒及窗口重新聚焦时与 PiWeb 原生会话目录对账，PiWeb 不可用时保留最近读取结果并显示状态。默认工作区是 `~/projects/film-production/films/<film UUID>`，按实例 ID、影片 UUID、绑定版本识别影片，不按标题猜测。不同对话共享实时影片资料，各自保留 PI 原生历史。
+
+界面信息编辑提交时，同一 SQLite 事务会写入字段级 `film_input_updates` 收件箱记录（before/after、来源 revision、状态）。新值覆盖同字段待处理值时只将旧字段项标为 `superseded`。Hook 查询 Task Center 当前 controller，仅通知有效 PI 执行会话；通知失败或无 controller 时保留 pending。PI 工具可读取更新、记录 defer/confirm/applied；applied 必须引用成功写回 job。Hook 只提出确认，不启动工作流；PIWeb 面板展示待办状态。
+
+### 单 Agent 控制权与 UI 交接（2026-10-07）
+
+PIWeb 面板读取 Task Center 的任务状态、controller 和 generation。当前 controller 显示为「主对话」并持有唯一工作流控制权；其他会话显示为「辅助对话」，不能写影片或控制工作流。UI 允许选择同影片、同绑定、在线且已连接的辅助对话，并要求用户确认交接。已有 controller 时不能再创建主对话；任务处于 awaiting_acceptance/completed/failed/released 时，主对话按钮明确显示「重开任务并新建主对话」，要求用户确认，再经 Task Center reopen、复核为 queued/running 且无 controller 后创建 PiWeb 会话并 claim。任务未绑定、无法查询、重开失败或仍不可领取时不创建会话。
+
+交接通过 Task Center 的 `handoff` 执行，要求当前任务为 running 且旧 Agent 已保存 checkpoint（`handoffReady`）。服务端重新核对影片绑定和 PiWeb 在线状态；交接后 Task Center generation 递增，旧 Agent 的写入由控制器校验拒绝。新主对话只收到一条恢复提示；若收件箱含 pending 更新，这条提示会要求先询问用户现在处理或稍后，不自动启动更新工作流。交接不会额外向旧对话发送一条提示，以免制造多余的「对话完成」通知。任务未运行、未 checkpoint、PiWeb 离线或身份不匹配时，UI 禁止交接并说明原因。
+
+对话列表的删除按钮调用 PiWeb `DELETE /api/sessions/:id`；PiWeb 确认成功后才撤销本地连接凭据。仍持有 running 任务控制权的主对话不能删除，必须先交接；PiWeb 不可用时保留本地记录，避免 UI 与真实会话状态分叉。
+
+影片主 Agent 的启动提示要求使用固定工作流，并使用 UI 辅助对话协作，避免内置后台 subagent 另发完成通知。PiWeb 的内置 subagent 若后台运行且父会话未领取其结果，也可能单独产生完成通知；这一类不是本应用的流程 Hook。
+
+组合回归使用隔离 Task Center/PiWeb fixture 验证：pending 梗概随 UI 交接通知到新 controller、收件箱仍可读取、旧 controller 写入被拒绝。4190 当前绑定任务为 `awaiting_acceptance`，因此浏览器不会对真实制作任务执行交接；真实 PI controller 的现场接管仍待合适任务进入 running 后由 UI 操作验收。
 
 讨论模式可留空任务，读取上下文和诊断。文字修订及视频操作分别需要 prepare/generate 模式，并绑定 PI 类型的远程制作任务；Task Center 中的实际 controller、generation 与当前 PI session 必须相符。当前 Codex 开发任务不能冒充 PI 制作任务。不会自动创建任务或夺取控制权，交接使用现有 Task Center。人工编辑器操作仍可直接执行。
 

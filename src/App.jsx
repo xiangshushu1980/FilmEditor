@@ -14,6 +14,13 @@ async function api(route,body,method='POST') {
 }
 const spec=shot=>Object.fromEntries(Object.entries(shot).filter(([k])=>!['stale','selectedCandidateId'].includes(k)));
 const promptHints='subject_definitions:\n\nsummary:\n\nretention_analysis:\n\ndetailed_description:\n\noverall_soundscape:\n\nnon_diegetic_music:\nN/A';
+const tokenCount=value=>Number.isFinite(value)?value.toLocaleString('en-US'):'—';
+function usageSummary(usage={}) {
+  const input=usage.prompt_tokens??usage.input_tokens;
+  const output=usage.completion_tokens??usage.output_tokens;
+  const cached=usage.prompt_tokens_details?.cached_tokens??usage.input_tokens_details?.cached_tokens??usage.prompt_cache_hit_tokens;
+  return `输入 ${tokenCount(input)} · 输出 ${tokenCount(output)} · 缓存命中 ${tokenCount(cached)}`;
+}
 function Field({label:caption,children}) {
   const generatedId=useId(),single=React.isValidElement(children)&&['input','textarea','select'].includes(children.type),controlId=single?(children.props.id||generatedId):undefined;
   return <div className="field"><label htmlFor={controlId}>{caption}</label>{single?React.cloneElement(children,{id:controlId}):children}</div>;
@@ -44,22 +51,22 @@ export default function App() {
   const [projects,setProjects]=useState([]),[p,setP]=useState(null),[draft,setDraft]=useState(null),[config,setConfig]=useState(null);
   const [busy,setBusy]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState('');
   const [sidebarCollapsed,setSidebarCollapsed]=useState(false);
-  const [panelWidths,setPanelWidths]=useState(()=>{try{return {...{sidebar:250,inspector:385},...JSON.parse(localStorage.getItem('film-editor-panel-widths')||'{}')};}catch{return {sidebar:250,inspector:385};}});
+  const [panelWidths,setPanelWidths]=useState(()=>{try{const saved=JSON.parse(localStorage.getItem('film-editor-panel-widths')||'{}'),content=Math.max(512,Math.min(1000,saved.content??512)),preferred=saved.sidebar===undefined||saved.sidebar===250?240:saved.sidebar,maxSidebar=Math.max(180,window.innerWidth-content-16-512);return {sidebar:Math.min(preferred,maxSidebar),content};}catch{return {sidebar:240,content:512};}});
   const [panelResizing,setPanelResizing]=useState(false);
   const [shotId,setShotId]=useState(''),[shotDraft,setShotDraft]=useState(null),[tab,setTab]=useState('edit'),[workflowStage,setWorkflowStage]=useState('script'),[inspectorMode,setInspectorMode]=useState('script'),[scriptTab,setScriptTab]=useState('plot');
   const [modal,setModal]=useState(''),[source,setSource]=useState(null),[selection,setSelection]=useState([]),[search,setSearch]=useState('');
+  const [llmActivity,setLlmActivity]=useState(null),[llmDetail,setLlmDetail]=useState(null);
   const [updates,setUpdates]=useState([]),[entityId,setEntityId]=useState(''),[zoom,setZoom]=useState(''),[newTitle,setNewTitle]=useState(''),[record,setRecord]=useState(null),[deleteTarget,setDeleteTarget]=useState(null);
   const [selectedRecord,setSelectedRecord]=useState(null),[recordDetails,setRecordDetails]=useState({});
-  const [feedback,setFeedback]=useState(null),[proposal,setProposal]=useState(null),[proposalPrompt,setProposalPrompt]=useState(''),[revisionJob,setRevisionJob]=useState('');
-  const [spatialProposal,setSpatialProposal]=useState(null),[spatialDraft,setSpatialDraft]=useState(null),[spatialJob,setSpatialJob]=useState(''),[spatialNotes,setSpatialNotes]=useState(''),[spatialValidation,setSpatialValidation]=useState(null),[sceneDraft,setSceneDraft]=useState('');
+  const [spatialProposal,setSpatialProposal]=useState(null),[spatialDraft,setSpatialDraft]=useState(null),[spatialJob,setSpatialJob]=useState(''),[spatialNotes,setSpatialNotes]=useState(''),[spatialValidation,setSpatialValidation]=useState(null),[spatialUsageJob,setSpatialUsageJob]=useState(null),[spatialStep,setSpatialStep]=useState(1);
+  useEffect(()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialJob('');setSpatialNotes('');setSpatialValidation(null);},[p?.id]);
   const projectRef=useRef(null),interactionRef=useRef({dirty:false,busy:''}),lastGenerationRef=useRef(null),workspaceRef=useRef(null),resizeDragRef=useRef(null);
   const shot=p?.shots.find(s=>s.id===shotId),snapshotById=Object.fromEntries((p?.snapshots||[]).map(s=>[s.id,s]));
   const entities=Object.entries(p?.entities||{}).map(([eid,v])=>({...snapshotById[v.snapshotId]?.manifest.entities.find(e=>e.entityId===eid),snapshot:snapshotById[v.snapshotId]}));
   const assets=entities.flatMap(e=>e.assets.filter(a=>e.snapshot.assets[a.assetId]).map(a=>({...a,hash:e.snapshot.assets[a.assetId].hash})));
   const selectedEntity=entities.find(e=>e.entityId===entityId);
   const candidates=p?.candidates.filter(c=>c.shotId===shotId)||[];
-  const sceneDirty=!!p?.spatialPlan&&sceneDraft!==p.spatialPlan.scenePlan;
-  const projectDirty=!!p&&!!draft&&JSON.stringify(draft)!==JSON.stringify({title:p.title,plot:p.plot,script:p.script,dialogue:p.dialogue,settings:p.settings})||sceneDirty;
+  const projectDirty=!!p&&!!draft&&JSON.stringify(draft)!==JSON.stringify({title:p.title,plot:p.plot,script:p.script,dialogue:p.dialogue,settings:p.settings});
   const shotDirty=!!shot&&!!shotDraft&&JSON.stringify(shotDraft)!==JSON.stringify(spec(shot));
   const dirty=projectDirty||shotDirty;
   interactionRef.current={dirty,busy};
@@ -70,16 +77,19 @@ export default function App() {
   const missingClips=p?.shots.filter(s=>!p.candidates.some(c=>c.shotId===s.id&&c.isCurrent&&c.status==='succeeded'&&c.media))||[];
   const needsSelection=!!p?.shots.some(s=>s.stale||!s.selectedCandidateId);
   const assemblyRunning=!!p?.jobs?.some(j=>j.kind==='assemble'&&j.status==='running');
-  const assemblyReason=assemblyRunning?'正在合成视频，请等待':busy?`正在${busy}`:dirty?'请先保存修改':!p?.shots.length?'请先添加镜头':missingClips.length?`以下镜头尚无有效视频：${missingClips.map(s=>s.title).join('、')}`:needsSelection?'尚未选片；点击按钮选用每镜最新有效候选并合成，已有选片会保留':'所有镜头已选定，可以合成';
+  const assemblyReason=assemblyRunning?'正在合成视频，请等待':busy?`正在${busy}`:dirty?'请先保存修改':!p?.shots.length?'请先添加镜头':missingClips.length?`以下镜头尚无有效视频：${missingClips.map(s=>s.title).join('、')}`:needsSelection?'尚未选片，等待 PI Agent 处理':'所有镜头已选定';
   const planningBusy=!!p?.jobs?.some(j=>['script','shots','prompt','revision','spatial'].includes(j.kind)&&j.status==='running');
+  useEffect(()=>{if(!p?.id)return;let cancelled=false;const poll=async()=>{try{const value=await api(`/projects/${p.id}/llm-progress` ,null,'GET');if(!cancelled)setLlmActivity(value);}catch{}};poll();const timer=setInterval(poll,planningBusy||modal==='llm-details'?500:5000);return()=>{cancelled=true;clearInterval(timer);};},[p?.id,planningBusy,modal]);
+  useEffect(()=>{if(modal!=='llm-details'||!p?.id)return;let cancelled=false;const poll=async()=>{try{const value=await api(`/projects/${p.id}/llm-progress?detail=1`,null,'GET');if(!cancelled)setLlmDetail(value);}catch{}};poll();const timer=setInterval(poll,500);return()=>{cancelled=true;clearInterval(timer);};},[modal,p?.id]);
   const stageStatus=(stage,target)=>p?.jobs?.some(j=>j.kind===stage&&j.status==='running'&&(!target||j.shotId===target))?'running':stage==='prompt'?p?.stages?.prompts.find(v=>v.shotId===target)?.status:p?.stages?.[stage];
   const media=h=>`/api/projects/${p.id}/media/${h}`;
+  const openLlmDetails=async()=>{setLlmDetail(await api(`/projects/${p.id}/llm-progress?detail=1`,null,'GET'));setModal('llm-details');};
   function apply(value,reset=true) {
     const projectChanged=projectRef.current&&projectRef.current!==value.id;
     projectRef.current=value.id;setP(value);localStorage.setItem('sean-film-project',value.id);
     if(projectChanged){setSelectedRecord(null);setRecordDetails({});setInspectorMode('script');}
     const url=new URL(location.href);url.searchParams.set('project',value.id);history.replaceState(null,'',url);
-    if(reset){setDraft({title:value.title,plot:value.plot,script:value.script,dialogue:value.dialogue,settings:value.settings});setSceneDraft(value.spatialPlan?.scenePlan||'');}
+    if(reset)setDraft({title:value.title,plot:value.plot,script:value.script,dialogue:value.dialogue,settings:value.settings});
     setShotId(current=>value.shots.some(s=>s.id===current)?current:value.shots[0]?.id||'');
   }
   async function refreshList(){setProjects(await api('/projects'));}
@@ -114,17 +124,17 @@ export default function App() {
     const drag=resizeDragRef.current,root=workspaceRef.current;if(!drag||!root)return;
     const delta=event.clientX-drag.startX,available=root.clientWidth||window.innerWidth;
     if(drag.side==='sidebar') {
-      const max=Math.max(180,Math.min(360,available-drag.widths.inspector-16-420));
+      const max=Math.max(180,Math.min(360,available-drag.widths.content-16-512));
       root.style.setProperty('--sidebar-width',`${Math.max(180,Math.min(max,drag.widths.sidebar+delta))}px`);
     } else {
-      const max=Math.max(320,Math.min(600,available-drag.widths.sidebar-16-420));
-      root.style.setProperty('--inspector-width',`${Math.max(320,Math.min(max,drag.widths.inspector-delta))}px`);
+      const max=Math.max(512,Math.min(1000,available-drag.widths.sidebar-16-512));
+      root.style.setProperty('--content-width',`${Math.max(512,Math.min(max,drag.widths.content+delta))}px`);
     }
   }
   function endPanelResize(event) {
     if(!resizeDragRef.current)return;
     const root=workspaceRef.current,styles=root&&getComputedStyle(root);
-    if(styles)setPanelWidths({sidebar:parseFloat(styles.getPropertyValue('--sidebar-width'))||panelWidths.sidebar,inspector:parseFloat(styles.getPropertyValue('--inspector-width'))||panelWidths.inspector});
+    if(styles)setPanelWidths({sidebar:parseFloat(styles.getPropertyValue('--sidebar-width'))||panelWidths.sidebar,content:parseFloat(styles.getPropertyValue('--content-width'))||panelWidths.content});
     resizeDragRef.current=null;setPanelResizing(false);
     if(event?.currentTarget?.hasPointerCapture?.(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
   }
@@ -132,15 +142,14 @@ export default function App() {
     const delta=event.key==='ArrowRight'?24:event.key==='ArrowLeft'?-24:0;if(!delta)return;event.preventDefault();
     setPanelWidths(current=>{
       const root=workspaceRef.current,available=root?.clientWidth||window.innerWidth;
-      if(side==='sidebar'){const max=Math.max(180,Math.min(360,available-current.inspector-16-420));return {...current,sidebar:Math.max(180,Math.min(max,current.sidebar+delta))};}
-      const max=Math.max(320,Math.min(600,available-current.sidebar-16-420));return {...current,inspector:Math.max(320,Math.min(max,current.inspector-delta))};
+      if(side==='sidebar'){const max=Math.max(180,Math.min(360,available-current.content-16-512));return {...current,sidebar:Math.max(180,Math.min(max,current.sidebar+delta))};}
+      const max=Math.max(512,Math.min(1000,available-current.sidebar-16-512));return {...current,content:Math.max(512,Math.min(max,current.content+delta))};
     });
   }
   async function savedInput() {
     if(!dirty)return p;
-    const value=await api(`/projects/${p.id}`,{revision:p.revision,...draft,...(shotDirty?{shotEdits:[shotDraft]}:{}),...(sceneDirty?{scenePlan:sceneDraft}:{})},'PATCH');apply(value);return value;
+    const value=await api(`/projects/${p.id}`,{revision:p.revision,...draft,...(shotDirty?{shotEdits:[shotDraft]}:{})},'PATCH');apply(value);return value;
   }
-  const generateStage=(stage,target)=>work('提交生成任务',async()=>{const current=await savedInput();await api(`/projects/${current.id}/stages/${stage}/generate`,{revision:current.revision,useCurrent:true,...(target?{shotId:target}:{})});apply(await api(`/projects/${current.id}`));setMessage('已按当前内容提交生成，输入版本和结果会保存到历史。');});
   async function openRecord(key,title,route) {
     setSelectedRecord({key,title});setInspectorMode('record');
     if(recordDetails[key])return;
@@ -156,31 +165,20 @@ export default function App() {
       setRecordDetails(current=>({...current,[key]:{_versionPair:true,before:oldValue,after:newValue}}));
     } catch(error) {setRecordDetails(current=>({...current,[key]:{error:error.message}}));}
   }
-  const generateVideo=(options={})=>work('提交本镜视频',async()=>{const current=await savedInput();await api(`/projects/${current.id}/candidates`,{revision:current.revision,shotId,useCurrent:true,...options});apply(await api(`/projects/${current.id}`));setConfig(await api('/config'));setTab('history');setMessage('当前镜头已校验并提交视频生成，顶部显示实时状态。');});
-  const openFeedback=c=>{setFeedback({candidateId:c.id,shotId:c.shotId,observed:'',desired:''});setProposal(null);setProposalPrompt('');setRevisionJob('');setModal('feedback');};
-  const loadProposal=jobId=>work('读取修订稿',async()=>{const j=await api(`/projects/${p.id}/jobs/${jobId}`);setFeedback({...j.input.feedback,shotId:j.shotId});setRevisionJob(j.id);setProposal(j);setProposalPrompt(j.result?.prompt||'');setModal('feedback');});
-  useEffect(()=>{
-    const j=p?.jobs?.find(j=>j.id===revisionJob);if(!j||j.status!=='succeeded'||proposal)return;
-    let cancelled=false;api(`/projects/${p.id}/jobs/${j.id}`).then(value=>{if(!cancelled){setProposal(value);setProposalPrompt(value.result.prompt);}}).catch(e=>setError(e.message));return()=>{cancelled=true;};
-  },[p?.jobs,revisionJob,proposal]);
-  const readSpatial=jobId=>work('读取空间修订稿',async()=>{const j=await api(`/projects/${p.id}/jobs/${jobId}`);setSpatialProposal(j);setSpatialDraft(j.adoptedResult||j.reviewDraft||j.result);setSpatialValidation(j.appliedAt?{warnings:[],questions:[]}:j.reviewValidation||{warnings:j.response?.warnings||[],questions:(j.reviewDraft||j.result)?.questions||[]});setSpatialJob(j.id);setSpatialNotes(j.input.spatialNotes||'');setModal('spatial');});
+  const readSpatial=jobId=>work('读取空间修订稿',async()=>{const j=await api(`/projects/${p.id}/jobs/${jobId}`);setSpatialProposal(j);setSpatialDraft(j.adoptedResult||j.reviewDraft||j.result);setSpatialValidation(j.appliedAt?{warnings:[],questions:[]}:j.reviewValidation||{warnings:j.response?.warnings||[],questions:(j.reviewDraft||j.result)?.questions||[]});setSpatialJob(j.id);setSpatialNotes(j.input.spatialNotes||'');setSpatialStep(1);setInspectorMode('spatial');setWorkflowStage('shots');});
   useEffect(()=>{
     const j=p?.jobs?.find(j=>j.id===spatialJob);if(!j||j.status!=='succeeded'||spatialProposal)return;
-    let cancelled=false;api(`/projects/${p.id}/jobs/${j.id}`).then(v=>{if(!cancelled){setSpatialProposal(v);setSpatialDraft(v.result);setSpatialValidation({warnings:v.response?.warnings||[],questions:v.result.questions});}}).catch(e=>setError(e.message));return()=>{cancelled=true;};
+    let cancelled=false;api(`/projects/${p.id}/jobs/${j.id}`).then(v=>{if(!cancelled){setSpatialProposal(v);setSpatialDraft(v.result);setSpatialValidation({warnings:v.response?.warnings||[],questions:v.result.questions});setSpatialStep(1);}}).catch(e=>setError(e.message));return()=>{cancelled=true;};
   },[p?.jobs,spatialJob,spatialProposal]);
   const editSpatial=change=>{setSpatialDraft(change);setSpatialValidation(null);};
   const spatialField=(id,key,value)=>editSpatial(d=>({...d,shots:d.shots.map(s=>s.id===id?{...s,[key]:value}:s)}));
   const spatialReadOnly=!!spatialProposal&&(!!spatialProposal.appliedAt||spatialProposal.input.revision!==p?.revision);
-  const checkSpatial=save=>work(save?'保存审阅草稿':'重新校验修订稿',async()=>{
-    const value=await api(`/projects/${p.id}/jobs/${spatialProposal.id}/${save?'spatial-draft':'validate-spatial'}`,{revision:p.revision,result:spatialDraft},save?'PUT':'POST');
-    setSpatialValidation(value);setMessage(save?'审阅草稿已保存，尚未采用；可关闭后继续审阅。':value.valid?'当前稿校验通过，可以采用。':'仍有问题，请展开对应镜头修改，或填写要求让 AI 继续修订。');
-  });
-  const submitSpatial=revise=>work(revise?'提交继续修订':'提交全片空间修订',async()=>{
-    const current=await savedInput();const value=await api(`/projects/${current.id}/stages/spatial/generate`,{revision:current.revision,useCurrent:true,spatialNotes,...(revise?{spatialRevision:{jobId:spatialProposal.id,draft:spatialDraft}}:{})});
-    setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob(value.jobId);apply(await api(`/projects/${p.id}`));
+  const saveSpatialDraft=()=>work('保存审阅草稿',async()=>{
+    const value=await api(`/projects/${p.id}/jobs/${spatialProposal.id}/spatial-draft`,{revision:p.revision,result:spatialDraft},'PUT');
+    setSpatialValidation(value);setMessage('审阅草稿已保存，PI Agent 可继续处理。');
   });
   const save=()=>work('保存项目',async()=>{await savedInput();await refreshList();setMessage('项目与镜头修改已保存');});
-  const saveShot=()=>projectDirty?save():work('保存镜头',async()=>{apply(await api(`/projects/${p.id}/shots/${shotId}`,{revision:p.revision,shot:shotDraft},'PUT'));setMessage('镜头已保存，请重新审核后生成');});
+  const saveShot=()=>projectDirty?save():work('保存镜头',async()=>{apply(await api(`/projects/${p.id}/shots/${shotId}`,{revision:p.revision,shot:shotDraft},'PUT'));setMessage('镜头已保存');});
   const setField=(key,value)=>setDraft(d=>({...d,[key]:value}));
   const setShotField=(key,value)=>setShotDraft(s=>({...s,[key]:value}));
   const updateSettings=(part,key,value)=>setDraft(d=>({...d,settings:part?{...d.settings,[part]:{...d.settings[part],[key]:value}}:{...d.settings,[key]:value}}));
@@ -204,18 +202,27 @@ export default function App() {
     setMessage('已从当前拍摄本删除镜头；版本、历史视频和成片保留。请检查拍摄本及空间衔接。');
   });
   const create=()=>work('创建项目',async()=>{if(!newTitle.trim())return;apply(await api('/projects',{title:newTitle}));await refreshList();setModal('');setNewTitle('');});
-  const openSpatial=()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob('');setModal('spatial');};
+  const openSpatial=()=>{setSpatialProposal(null);setSpatialDraft(null);setSpatialValidation(null);setSpatialJob('');setSpatialNotes('');setSpatialStep(1);setInspectorMode('spatial');setWorkflowStage('shots');};
   // Owner: Sean — reveal project-side PIWeb connection settings.
-  const openPiWeb=()=>setInspectorMode('pi');
-  const goTo=id=>document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'});
+  const openPiWeb=()=>work('保存并打开制作对话',async()=>{await savedInput();setInspectorMode('pi');setMessage('当前剧情、剧本和镜头编辑已保存。制作 Agent 读取影片上下文后，可按现有固定流程生成或修订内容。');});
   const navigateStage=stage=>{setWorkflowStage(stage);if(stage==='script'){setInspectorMode('script');return;}if(stage==='shots'){setInspectorMode('shot');setTab('edit');return;}setInspectorMode('shot');setTab('history');};
-  const jumpStage=stage=>{navigateStage(stage);requestAnimationFrame(()=>goTo(({script:'script-stage',shots:'shotlist-stage',video:'video-stage'})[stage]));};
+  const latestSpatialJob=[...(p?.jobs||[])].reverse().find(j=>j.kind==='spatial'&&j.status==='succeeded');
+  const latestSpatialCall=[...(p?.jobs||[])].reverse().find(j=>j.kind==='spatial');
+  useEffect(()=>{
+    if(inspectorMode!=='spatial'||!p?.id||!latestSpatialCall)return;
+    let cancelled=false;
+    api(`/projects/${p.id}/jobs/${latestSpatialCall.id}`,null,'GET').then(value=>{if(!cancelled)setSpatialUsageJob(value);}).catch(()=>{if(!cancelled)setSpatialUsageJob(null);});
+    return()=>{cancelled=true;};
+  },[inspectorMode,p?.id,latestSpatialCall?.id,latestSpatialCall?.status]);
+  const spatialUsageSource=spatialProposal||spatialUsageJob;
+  const spatialDisplay=spatialDraft||(p?.stages?.spatial==='stale'?null:p?.spatialPlan)||null;
   const versionGroups=[];for(let i=0;i<(p?.planningVersions||[]).length;){const before=p.planningVersions[i],after=p.planningVersions[i+1];if(before.kind?.startsWith('before:')&&after){versionGroups.push({before,after});i+=2;}else{versionGroups.push({before:null,after:before});i++;}}
   return <>
-    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>修改后可重新生成</Badge><button disabled={!p} aria-controls="film-pi" onClick={openPiWeb}>PIWeb 对话</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">S</span><div><strong>短片编辑器</strong><small>Sean · 从剧情到成片</small></div></div><div className="header-actions"><Badge>保存后供 PI Agent 读取</Badge><button disabled={!p||!!busy} aria-controls="film-pi" onClick={openPiWeb}>PIWeb 对话</button><button disabled={!p||!!busy} onClick={()=>setModal('settings')}>接口与参数</button><button className="primary" disabled={!p||!dirty||!!busy} onClick={save}>保存项目{dirty?' •':''}</button></div></header>
     {activeGeneration&&<div className="generation-banner"><div><strong>视频生成 · {activeGeneration.projectTitle} / {activeGeneration.shotTitle}</strong><GenerationProgress candidate={activeGeneration} active/></div>{activeGeneration.projectId===p?.id&&<button onClick={()=>{chooseShot(activeGeneration.shotId);setTab('history');}}>查看候选</button>}</div>}
+    {llmActivity&&<button className={`llm-activity ${llmActivity.status}`} onClick={openLlmDetails} aria-label="查看 LLM 输入和输出"><span className="llm-spinner"/><span className="llm-activity-copy"><b>{llmActivity.task}</b><small>{llmActivity.calls?.at(-1)?.outputPreview||'等待模型输出…'}</small></span><span className="llm-activity-state">{llmActivity.status==='running'||llmActivity.status==='preparing'?'运行中':llmActivity.status==='succeeded'?'完成':'失败'} · 查看输入/输出</span></button>}
     {(error||message||busy)&&<div className={`notice ${error?'error':''}`} role="status"><span>{error||busy||message}</span>{!busy&&<button className="quiet" onClick={()=>{setError('');setMessage('');}}>关闭</button>}</div>}
-    <main ref={workspaceRef} style={{'--sidebar-width':`${panelWidths.sidebar}px`,'--inspector-width':`${panelWidths.inspector}px`}} className={`workspace ${sidebarCollapsed?'sidebar-collapsed':''} ${panelResizing?'panel-resizing':''}`}>
+    <main ref={workspaceRef} style={{'--sidebar-width':`${panelWidths.sidebar}px`,'--content-width':`${panelWidths.content}px`}} className={`workspace ${sidebarCollapsed?'sidebar-collapsed':''} ${panelResizing?'panel-resizing':''}`}>
       <aside className="sidebar"><div className="section-head sidebar-heading"><h2>短片项目</h2><div className="sidebar-controls"><button className="quiet accent" disabled={!!busy||dirty} onClick={()=>setModal('create')}>＋ 新建</button><button className="quiet sidebar-toggle" aria-label={sidebarCollapsed?'展开左侧栏':'收起左侧栏'} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed?'展开左侧栏':'收起左侧栏'} onClick={()=>setSidebarCollapsed(value=>!value)}>{sidebarCollapsed?'›':'‹'}</button></div></div>
         <select aria-label="选择项目" value={p?.id||''} disabled={!!busy||dirty} onChange={e=>work('打开项目',async()=>{apply(await api(`/projects/${e.target.value}`));setUpdates([]);})}><option value="" disabled>选择项目</option>{projects.map(p=><option key={p.id} value={p.id}>{p.title}</option>)}</select>
         <div className="section-head entity-head"><h2>实体快照</h2><Badge>{entities.length}</Badge></div><p className="muted compact">将 Reference 的设定和定稿素材带入当前短片。</p>
@@ -236,28 +243,28 @@ export default function App() {
             <div className="section-head"><div><h2>1 · 故事、剧本与对白</h2><small className="muted">内容摘要与完成度</small></div><Badge>{stageStatus('script')==='running'?'生成中':p.script.trim()?'已就绪':'待编写'}</Badge></div>
             <div className="stat-tiles"><div><small>故事梗概</small><b>{draft?.plot?.trim()?`${draft.plot.trim().length} 字`:'待填写'}</b></div><div><small>剧本</small><b>{draft?.script?.trim()?`${draft.script.trim().split(/\n+/).filter(Boolean).length} 段`:'待编写'}</b></div><div><small>对白总稿</small><b>{draft?.dialogue?.trim()?`${draft.dialogue.trim().length} 字`:'待填写'}</b></div></div>
           </section>
-          <div className="story-stage-actions"><button className="primary" disabled={!!busy||planningBusy||!entities.length||!draft?.plot.trim()} onClick={()=>generateStage('script')}>生成剧本和对白 ↗</button></div>
           {!!p.jobs?.length&&<ExpandableRecordGroup title="任务记录" count={`${p.jobs.length} 次`} hint={planningBusy?'正在生成':''}>{[...p.jobs].reverse().map(j=>{const key=`job:${j.id}`;return <RecordCard key={j.id} title={stageNames[j.kind]||j.kind} meta={`${j.shotId?p.shots.find(s=>s.id===j.shotId)?.title+' · ':''}${new Date(j.createdAt).toLocaleString()}`} status={<Badge tone={j.status==='failed'?'warn':j.status==='succeeded'?'good':''}>{label[j.status]||j.status}</Badge>} selected={inspectorMode==='record'&&selectedRecord?.key===key} onSelect={()=>openRecord(key,stageNames[j.kind]||j.kind,`/projects/${p.id}/jobs/${j.id}`)} actions={j.kind==='spatial'&&j.status==='succeeded'&&<button className="quiet" title="审阅空间修订稿" aria-label="审阅空间修订稿" onClick={()=>readSpatial(j.id)}>审阅</button>}/>;})}</ExpandableRecordGroup>}
           {!!versionGroups.length&&<ExpandableRecordGroup title="创作版本" count={`${versionGroups.length} 次改动`}>{[...versionGroups].reverse().map(({before,after})=>{const key=before?`version-pair:${before.id}:${after.id}`:`version:${after.id}`,title=before?`修订 ${before.revision} → ${after.revision}`:`修订 ${after.revision}`,meta=`${new Date(after.at).toLocaleString()} · ${versionKindNames[after.kind]||after.kind}`;return <RecordCard key={key} title={title} meta={meta} selected={inspectorMode==='record'&&selectedRecord?.key===key} onSelect={()=>before?openVersionRecord(key,title,before,after):openRecord(key,title,`/projects/${p.id}/planning-versions/${after.id}`)}/>;})}</ExpandableRecordGroup>}
-          <div id="shotlist-stage" className="section-head shotlist-head"><div><h2>2 · 拍摄本与提示词</h2><small className="muted">共用空间、角色站位、逐镜动作和提示词统一在此编辑；视频提交时自动校验当前镜头</small></div><div className="row"><button disabled={!!busy||planningBusy||!draft?.script.trim()} onClick={()=>generateStage('shots')}>生成拍摄本 ↗</button><button disabled={!!busy||!entities.length||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot()}>＋ 添加镜头</button></div></div>
+          <div id="shotlist-stage" className="section-head shotlist-head"><div><h2>2 · 拍摄本与提示词</h2><small className="muted">在此编辑拍摄本与提示词；流程由 PI Agent 按固定阶段执行</small></div><div className="row action-row"><button disabled={!!busy||!entities.length||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot()}>＋ 添加镜头</button></div></div>
           <section className={`story-card focus-card spatial-summary ${inspectorMode==='spatial'?'card-active':''}`} role="button" tabIndex={0} aria-label="打开共用空间详情" onClick={()=>{setInspectorMode('spatial');setWorkflowStage('shots');}} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setInspectorMode('spatial');setWorkflowStage('shots');}}}>
             <div className="section-head"><div><h3>共用空间与角色站位</h3><small className="muted">全片空间锚点与镜间连续性</small></div><Badge tone={p.stages?.spatial==='confirmed'?'good':'warn'}>{p.stages?.spatial==='stale'?'需更新':p.spatialPlan?'已保存':'待建立'}</Badge></div>
-            <div className="stat-tiles"><div><small>场景说明</small><b>{p.spatialPlan?.scenePlan?.trim()?`${p.spatialPlan.scenePlan.trim().length} 字已配置`:'尚未建立'}</b></div><div><small>镜间状态</small><b>{p.spatialPlan?.shots?.length||0} / {p.shots.length} 镜</b></div></div>
+            <div className="stat-tiles"><div><small>共用空间说明</small><b>{p.stages?.spatial==='stale'?'需重新生成':p.spatialPlan?.scenePlan?.trim()?'已建立':'尚未建立'}</b></div><div><small>逐镜状态覆盖</small><b>{p.stages?.spatial==='stale'?'已过期':`${p.spatialPlan?.shots?.length||0} / ${p.shots.length} 镜`}</b></div></div>
+            {p.stages?.spatial==='stale'&&<p className="muted compact spatial-stale-note">来源已变更，当前方案暂不用于生成；PI Agent 可读取最新内容并按固定阶段更新。</p>}
           </section>
           <div className="shot-list">{p.shots.map((s,i)=>{
             const current=p.candidates.filter(c=>c.shotId===s.id),selected=current.find(c=>c.id===s.selectedCandidateId&&c.isCurrent),valid=current.filter(c=>c.isCurrent&&c.status==='succeeded'),c=selected||valid.at(-1),running=current.some(c=>c.isCurrent&&['queued','running','submitting','recovering','uncertain'].includes(c.status)),state=running?'生成中':selected?'已选定':valid.length?'待选片':current.some(c=>c.status==='succeeded')?'需重新生成':current.at(-1)?.status==='failed'?'生成失败':'待生成';
             return <RecordCard key={s.id} className="shot-card focus-shot" leading={<span className="shot-number">{String(i+1).padStart(2,'0')}</span>} title={s.title} meta={<><span>{s.durationSec} 秒</span><span>{current.length} 个候选</span><span>{s.entityIds.length} 个出镜实体</span></>} status={<Badge tone={c?'good':'warn'}>{state}</Badge>} selected={shotId===s.id&&inspectorMode==='shot'} onSelect={()=>chooseShot(s.id)} ariaLabel={`选择镜头 ${i+1} ${s.title}`} actions={<><button className="quiet" aria-label="在此镜后插入镜头" title="在此镜后插入镜头" disabled={!!busy||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot(s.id)}>＋</button><button className="quiet" aria-label={`删除镜头 ${i+1}`} title="删除镜头" disabled={deletingBlocked||activeGeneration?.shotId===s.id&&activeGeneration?.projectId===p.id} onClick={()=>requestDelete(s)}>删除</button><button className="quiet" aria-label="镜头前移" title="镜头前移" disabled={i===0||!!busy||dirty} onClick={()=>ordered(i,i-1)}>↑</button><button className="quiet" aria-label="镜头后移" title="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={()=>ordered(i,i+1)}>↓</button></>}/>;
             return <RecordCard key={s.id} className="shot-card focus-shot" leading={<span className="shot-number">{String(i+1).padStart(2,'0')}</span>} title={s.title} meta={<><span>{s.durationSec} 秒</span><span>{current.length} 个候选</span><span>{s.entityIds.length} 个出镜实体</span></>} status={<Badge tone={c?'good':'warn'}>{state}</Badge>} selected={shotId===s.id&&inspectorMode==='shot'} onSelect={()=>chooseShot(s.id)} ariaLabel={`选择镜头 ${i+1} ${s.title}`} actions={<><button className="quiet" aria-label="在此镜后插入镜头" title="在此镜后插入镜头" disabled={!!busy||dirty||planningBusy||p.shots.length>=40} onClick={()=>addShot(s.id)}>＋</button><button className="quiet" aria-label={`删除镜头 ${i+1}`} title="删除镜头" disabled={deletingBlocked||activeGeneration?.shotId===s.id&&activeGeneration?.projectId===p.id} onClick={()=>requestDelete(s)}>删除</button><button className="quiet" aria-label="镜头前移" title="镜头前移" disabled={i===0||!!busy||dirty} onClick={()=>ordered(i,i-1)}>↑</button><button className="quiet" aria-label="镜头后移" title="镜头后移" disabled={i===p.shots.length-1||!!busy||dirty} onClick={()=>ordered(i,i+1)}>↓</button></>}/>;
-          })}{!p.shots.length&&<div className="empty"><span className="empty-icon">▤</span><h3>拍摄本等待你的故事</h3><p>使用当前剧本生成拍摄本。</p></div>}</div>
+          })}{!p.shots.length&&<div className="empty"><span className="empty-icon">▤</span><h3>拍摄本等待你的故事</h3><p>保存剧情后，可在 PIWeb 对话中请 Agent 执行对应阶段。</p></div>}</div>
           {!!p.planWarnings?.length&&<details className="plan-warnings"><summary>生成时发现 {p.planWarnings.length} 项问题，可编辑后重新生成</summary>{p.planWarnings.map(w=><p key={w.shotId} className="error-text">{w.title}：{w.message}</p>)}</details>}
           <section id="video-stage" className={`story-card focus-card video-summary ${inspectorMode==='shot'&&tab==='history'?'card-active':''}`} role="button" tabIndex={0} aria-label="打开视频候选详情" onClick={()=>navigateStage('video')} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();navigateStage('video');}}}>
-            <div className="section-head"><div><h2>3 · 视频与成片</h2><small className="muted">候选、选片与最终合成</small></div><Badge tone={p.cutStale?'warn':'good'}>{p.cutStale?'待更新':'当前成片'}</Badge></div>
+            <div className="section-head"><div><h2>3 · 视频与成片</h2><small className="muted">查看视频候选与成片历史</small></div><Badge tone={p.cutStale?'warn':'good'}>{p.cutStale?'待更新':'当前成片'}</Badge></div>
             <div className="stat-tiles"><div><small>有效候选</small><b>{p.candidates.filter(c=>c.isCurrent&&c.status==='succeeded').length} 个</b></div><div><small>待生成</small><b>{missingClips.length} 镜</b></div><div><small>成片版本</small><b>{p.cuts.length} 版</b></div></div>
-            <p className="muted compact" role="status">{assemblyReason}</p><div className="row focus-actions"><button disabled={!!busy||assemblyRunning||dirty||!p.shots.length||!!missingClips.length} title={assemblyReason} className="primary" onClick={e=>{e.stopPropagation();work('FFmpeg 正在合成',async()=>{clean();apply(await action('assemble',{selectLatest:needsSelection}));setMessage('成片已保存，可以播放或下载');});}}>{needsSelection?'选用最新候选并合成':'合成选定镜头'}</button></div>
+            <p className="muted compact" role="status">{assemblyReason}</p>
           </section>
         </>}
       </section>
-      <div className="panel-resizer inspector-resizer" role="separator" aria-orientation="vertical" aria-label="调整右侧详情栏宽度" aria-valuemin="320" aria-valuemax="600" aria-valuenow={panelWidths.inspector} tabIndex={0} onPointerDown={event=>beginPanelResize(event,'inspector')} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} onKeyDown={event=>nudgePanelResize(event,'inspector')}/>
+      <div className="panel-resizer inspector-resizer" role="separator" aria-orientation="vertical" aria-label="调整中间内容区宽度，最小512像素" aria-valuemin="512" aria-valuemax="1000" aria-valuenow={panelWidths.content} tabIndex={0} onPointerDown={event=>beginPanelResize(event,'inspector')} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} onKeyDown={event=>nudgePanelResize(event,'inspector')}/>
       <aside id="shot-inspector" className="inspector"><div className="section-head"><h2>{inspectorMode==='pi'?'PIWeb 对话':inspectorMode==='record'?selectedRecord?.title||'记录详情':inspectorMode==='script'?'故事与剧本':inspectorMode==='spatial'?'全片空间详情':inspectorMode==='shot'&&tab==='history'?'视频候选':'镜头详情'}</h2>{inspectorMode==='shot'&&shot&&<Badge>{shot.durationSec}s</Badge>}</div>
         {inspectorMode==='pi'&&<FilmPiPanel project={p}/>}
         {inspectorMode==='record'&&selectedRecord&&<RecordDetails value={recordDetails[selectedRecord.key]}/>}
@@ -270,7 +277,47 @@ export default function App() {
             {scriptTab==='dialogue'&&<Field label="对白总稿 · 可编辑"><textarea rows={18} placeholder="审阅角色对白和语气；逐镜对白在拍摄安排中编辑。" value={draft?.dialogue||''} onChange={e=>setField('dialogue',e.target.value)}/></Field>}
           </div>
         </>}
-        {inspectorMode==='spatial'&&<div className="focused-editor"><p className="muted compact">统一场景事实、角色位置、移动路径和镜间状态。全片修订先产出可审阅草稿。</p><Badge tone={p.stages?.spatial==='confirmed'?'good':'warn'}>{p.stages?.spatial==='stale'?'需要更新':p.spatialPlan?'已保存':'待建立'}</Badge><Field label="共用空间说明 · 修改后保存项目"><textarea rows={13} value={sceneDraft} onChange={e=>setSceneDraft(e.target.value)} placeholder="整理已确认的场景结构、固定物件与空间关系；未核实的细节留空。"/></Field>{p.spatialPlan?.shots?.map((item,index)=><article className="spatial-shot-detail" key={item.id}><b>{String(index+1).padStart(2,'0')} · {p.shots.find(value=>value.id===item.id)?.title||item.id}</b><p><small>开始：</small>{item.startState}</p><p><small>结束：</small>{item.endState}</p><p><small>衔接：</small>{item.transitionFromPrevious}</p></article>)}<button disabled={!!busy||planningBusy||!p.shots.length||!draft?.script.trim()||!!incompleteShotPlans.length} onClick={openSpatial}>修订全片空间与提示词 ↗</button></div>}
+        {inspectorMode==='spatial'&&<div className="spatial-inspector">
+          <div className="spatial-status-line"><Badge tone={p.stages?.spatial==='confirmed'?'good':'warn'}>{p.stages?.spatial==='stale'?'需要更新':p.spatialPlan?'已保存':'待建立'}</Badge><span className="muted">当前拍摄本 · v{p.revision}</span></div>
+          <nav className="spatial-tabs" role="tablist" aria-label="共用空间与站位选项">
+            {[['整体空间','全片空间基准'],['整体核验',spatialDraft?.questions?.length?`${spatialDraft.questions.length} 项待核实`:'漏洞与校验'],['逐镜站位',`${spatialDisplay?.shots?.length||0} / ${p.shots.length} 镜`]].map(([title,hint],index)=><button type="button" role="tab" key={title} id={`spatial-tab-${index+1}`} aria-selected={spatialStep===index+1} aria-controls="spatial-tab-panel" className={spatialStep===index+1?'active':''} onClick={()=>setSpatialStep(index+1)}><b>{title}</b><small>{hint}</small></button>)}
+          </nav>
+          <section className="spatial-workspace" id="spatial-tab-panel" role="tabpanel" aria-labelledby={`spatial-tab-${spatialStep}`} aria-live="polite">
+            {spatialStep===1&&<>
+              <div className="spatial-step-heading"><h3>全片空间基准</h3><p>确认整部剧本共用的场景事实、固定物件和空间关系；逐镜站位在第三个选项卡维护。</p></div>
+              {p.stages?.spatial==='stale'&&<p className="spatial-explainer">旧方案与当前拍摄本不匹配。PI Agent 可读取当前拍摄本，按固定流程建立修订稿。</p>}
+              <div className="action-row spatial-top-actions">{!spatialProposal&&latestSpatialJob&&<button disabled={!!busy} onClick={()=>readSpatial(latestSpatialJob.id)}>查看上次草案</button>}</div>
+              {spatialJob&&!spatialProposal&&<p className="muted compact" role="status">草案状态：{label[p.jobs?.find(j=>j.id===spatialJob)?.status]||'正在生成'} {p.jobs?.find(j=>j.id===spatialJob)?.error||''}</p>}
+              {spatialUsageSource&&<div className="muted compact" role="status">空间调用 token（{spatialProposal?'当前记录':'最近一次调用'}{spatialUsageSource.status==='failed'?' · 失败':''}）：{usageSummary(spatialUsageSource.response?.usage)}{(spatialUsageSource.response?.repairAttempts||[]).map((attempt,index)=><span key={index}> · 修复调用：{usageSummary(attempt.usage)}</span>)}</div>}
+              {spatialDisplay?.scenePlan?<Field label={spatialDraft?'场景说明 · 草案可编辑':'场景说明 · 已保存，只读'}><textarea rows={12} readOnly={!spatialDraft||spatialReadOnly} value={spatialDisplay.scenePlan} onChange={e=>spatialDraft&&editSpatial(d=>({...d,scenePlan:e.target.value}))}/></Field>:<div className="spatial-empty">尚无共用空间说明。请在 PIWeb 对话中让 Agent 按固定流程创建。</div>}
+              {!spatialDraft&&<p className="muted compact">依据已确认的场景资料填写；不确定的家具或空间尺寸不要推测。</p>}
+            </>}
+            {spatialStep===2&&<>
+              <div className="spatial-step-heading"><h3>全片核验与待核实项</h3><p>检查整部剧本层面的事实缺口、空间连续性及其他会影响镜头成立的问题。这里只处理问题，不编辑最终视频提示词。</p></div>
+              {spatialDraft?.questions?.length?<ol className="spatial-questions">{spatialDraft.questions.map((q,i)=><li key={i}>{q}</li>)}</ol>:<div className="spatial-empty">当前草案没有待确认事项。</div>}
+              {!!spatialValidation?.warnings?.length&&<div className="spatial-audit-warnings"><h4>生成校验发现 {spatialValidation.warnings.length} 项</h4>{spatialValidation.warnings.map((w,i)=><p className="error-text spatial-warning" key={i}>{w.title||'全片'}：{w.message}{w.shotId&&<button className="quiet" onClick={()=>{setSpatialStep(3);setTimeout(()=>{const el=document.getElementById('spatial-shot-'+w.shotId);if(el){el.open=true;el.scrollIntoView({block:'center'});}},40);}}>到逐镜查看</button>}</p>)}</div>}
+              <Field label="补充核实事实或修订要求"><textarea rows={7} disabled={!spatialDraft||spatialReadOnly} value={spatialNotes} onChange={e=>setSpatialNotes(e.target.value)} placeholder="填写核实后的事实和依据，或说明全片层面的漏洞。未知内容请标记为未知。"/></Field>
+            </>}
+            {spatialStep===3&&<>
+              <div className="spatial-step-heading"><h3>逐镜站位与最终视频提示词</h3><p>每镜分别维护位置、朝向、视线、道具状态及连续性。完整英文提示词是最终送给 H3 的文本。</p></div>
+              {spatialDisplay?.shots?.map((s,i)=>{const warning=spatialValidation?.warnings?.some(w=>w.shotId===s.id);return <details className="spatial-shot-panel" id={'spatial-shot-'+s.id} key={s.id} open={warning}><summary><span>{String(i+1).padStart(2,'0')} · {p.shots.find(v=>v.id===s.id)?.title||'历史镜头'}</span>{warning&&<Badge tone="warn">需校验</Badge>}</summary>
+                {s.changes?.length>0&&<ul>{s.changes.map((v,j)=><li key={j}>{v}</li>)}</ul>}
+                <Field label="构图与机位关系"><textarea rows={2} readOnly={!spatialDraft||spatialReadOnly} value={s.framing} onChange={e=>spatialField(s.id,'framing',e.target.value)}/></Field>
+                <Field label="开始状态 · 位置／朝向／视线／道具"><textarea rows={3} readOnly={!spatialDraft||spatialReadOnly} value={s.startState} onChange={e=>spatialField(s.id,'startState',e.target.value)}/></Field>
+                <Field label="结束状态"><textarea rows={3} readOnly={!spatialDraft||spatialReadOnly} value={s.endState} onChange={e=>spatialField(s.id,'endState',e.target.value)}/></Field>
+                <Field label="位置变化原因与上镜衔接"><textarea rows={3} readOnly={!spatialDraft||spatialReadOnly} value={s.transitionFromPrevious} onChange={e=>spatialField(s.id,'transitionFromPrevious',e.target.value)}/></Field>
+                <Field label="连续性要求"><textarea rows={3} readOnly={!spatialDraft||spatialReadOnly} value={s.continuity} onChange={e=>spatialField(s.id,'continuity',e.target.value)}/></Field>
+                <details className="spatial-prompt-details"><summary>视频提示词与原稿对照</summary><details><summary>原提示词</summary><Prompt text={spatialProposal?.input?.content?.shots?.find(v=>v.id===s.id)?.prompt||p.shots.find(v=>v.id===s.id)?.prompt||''}/></details><Field label="完整视频提示词"><textarea readOnly={!spatialDraft||spatialReadOnly} rows={14} className="mono" value={s.prompt||''} onChange={e=>spatialField(s.id,'prompt',e.target.value)}/></Field></details>
+              </details>;})||<div className="spatial-empty">生成或读取草案后，逐镜校正内容会显示在这里。</div>}
+            </>}
+          </section>
+          {spatialStep===3&&spatialDraft&&<>
+            {!spatialReadOnly&&!spatialValidation&&<p className="muted" role="status">草案有修改，等待 PI Agent 校验。</p>}
+            <p className="muted compact">{spatialReadOnly?'此为历史稿，只能查看。':spatialDraft.questions?.length?'存在待确认事项。':!spatialValidation?'等待 PI Agent 校验。':spatialValidation.warnings?.length?'校验发现问题。':'校验通过。'}</p>
+            {spatialDraft&&spatialProposal&&!spatialReadOnly&&<div className="spatial-review-actions"><button disabled={!!busy||planningBusy} onClick={saveSpatialDraft}>保存草案</button></div>}
+            <p className="muted compact">草案版本 {spatialProposal?.input?.revision??p.revision} · PI Agent 负责校验和采用</p>
+          </>}
+        </div>}
         {inspectorMode==='shot'&&<>
         <nav className="tabs"><button className={tab==='edit'?'selected':''} onClick={()=>{setTab('edit');setWorkflowStage('shots');}}>拍摄安排</button><button className={tab==='prompt'?'selected':''} onClick={()=>{setTab('prompt');setWorkflowStage('shots');}}>逐镜提示词</button><button className={tab==='history'?'selected':''} onClick={()=>{setTab('history');setWorkflowStage('video');}}>视频候选</button></nav>
         {!shotDraft?<div className="empty small"><p>选择一个镜头，查看提示词、素材和候选。</p></div>:<>
@@ -287,52 +334,20 @@ export default function App() {
             {shotDraft.dialogue.map((d,i)=><div className="dialogue" key={i}><div className="row"><select aria-label="说话者" value={d.speaker} onChange={e=>setShotField('dialogue',shotDraft.dialogue.map((d,j)=>j===i?{...d,speaker:e.target.value}:d))}>{entities.filter(e=>shotDraft.entityIds.includes(e.entityId)).map(e=><option key={e.entityId} value={e.entityId}>{e.name}</option>)}</select><input aria-label="语言" value={d.language} onChange={e=>setShotField('dialogue',shotDraft.dialogue.map((d,j)=>j===i?{...d,language:e.target.value}:d))}/><button aria-label="删除对白" className="quiet" onClick={()=>setShotField('dialogue',shotDraft.dialogue.filter((_,j)=>j!==i))}>×</button></div><textarea rows={2} value={d.text} onChange={e=>setShotField('dialogue',shotDraft.dialogue.map((d,j)=>j===i?{...d,text:e.target.value}:d))}/></div>)}
             <details><summary>锁定已有音频</summary><p className="muted">选用录音原话作为完整音轨；先听音频、核对白，再设置匹配时长并修改提示词。</p><select aria-label="锁定音频" value={shotDraft.nativeAudioAssetId||''} onChange={e=>setShotField('nativeAudioAssetId',e.target.value||null)}><option value="">不锁定 · 按镜头对白生成</option>{assets.filter(a=>a.mediaType==='audio'&&shotDraft.entityIds.includes(a.entityId)).map(a=><option key={a.assetId} value={a.assetId}>{p.entities[a.entityId]?.name} · {a.durationSec?.toFixed(2)}s</option>)}</select>{shotDraft.nativeAudioAssetId&&<><audio controls src={media(assets.find(a=>a.assetId===shotDraft.nativeAudioAssetId)?.hash)}/><Field label="人工核对后的录音原话"><textarea rows={3} value={shotDraft.verifiedAudioTranscript} onChange={e=>setShotField('verifiedAudioTranscript',e.target.value)}/></Field></>}</details>
           </div>}
-          {tab==='prompt'&&<div className="prompt-editor"><h3>逐镜提示词 · {shot.title}</h3>{p.stages?.spatial==='stale'&&<p className="error-text">共用空间方案已过期，请先按拍摄本中的“统一空间并修订全部提示词”更新。</p>}<p className="muted compact">检查参考图绑定、空间与站位、动作衔接、对白标签和 Ref2VA 六段式。状态：{stageStatus('prompt',shotId)==='running'?'正在生成':(p.generationState?.prompts||p.stages?.prompts||[]).find(v=>v.shotId===shotId)?.status==='stale'?'需跟随拍摄安排更新':shotDraft.prompt.trim()?'已保存，可编辑':'待编写'}。可直接编辑，也可让 LLM 生成；视频提交时会再次校验。</p><button disabled={!!busy||planningBusy||!draft?.script.trim()||p.stages?.spatial==='stale'} onClick={()=>generateStage('prompt',shotId)}>生成／重试本镜提示词 ↗</button> <textarea aria-label="生成前审核和编辑逐镜提示词" className="prompt-textarea" spellCheck="false" placeholder={promptHints} value={shotDraft.prompt} onChange={e=>setShotField('prompt',e.target.value)}/><details><summary>查看标色提示词</summary><Prompt text={shotDraft.prompt}/></details></div>}
-          {tab==='history'&&<><div className="candidate-list">{[...candidates].reverse().map((c,i)=><article className={`candidate ${c.id===shot.selectedCandidateId?'chosen':''}`} key={c.id}><div className="section-head"><b>候选 {candidates.length-i}</b><Badge tone={c.status==='succeeded'?'good':c.status==='failed'?'warn':''}>{label[c.status]||c.status}</Badge></div><small className="muted">seed {c.input.samplingSeed??c.input.shot.seed} · {new Date(c.createdAt).toLocaleString()}</small>{c.media&&<video controls src={media(c.media.hash)} preload="metadata"/>}<GenerationProgress candidate={c} active={config?.activeCandidateId===c.id}/>{c.error&&<p className="error-text">{c.error}</p>}<div className="row"><button className={c.id===shot.selectedCandidateId?'primary':''} disabled={!!busy||dirty||c.status!=='succeeded'||!c.isCurrent} onClick={()=>work('选定候选',async()=>{clean();apply(await action('select',{candidateId:c.id}));})}>{c.id===shot.selectedCandidateId?'✓ 已选用':'选用此镜头'}</button><button disabled={!!generationDisabledReason||!c.isCurrent} title={generationDisabledReason||'生成保留历史的新候选'} onClick={()=>generateVideo({parentId:c.id,retryExact:true})}>重试原输入</button></div>{c.status==='succeeded'&&<button disabled={!!busy||planningBusy||p.stages?.spatial==='stale'} onClick={()=>openFeedback(c)}>描述问题并修订提示词</button>}{!c.isCurrent&&<p className="muted">来源已过期 · 保留供比较</p>}<details><summary>来源与分支</summary><p className="mono">候选 {c.id}<br/>父候选 {c.parentId||'首个候选'}<br/>分支 {({variation:'同一内容的新候选',retry:'原输入重试','edit-and-rerun':'按当前内容生成'})[c.branch]||c.branch}<br/>prompt {c.promptId||'未提交'}<br/>输入 {c.input.shotHash}<br/>模型 {c.input.model.unet}</p><Prompt text={c.input.shot.prompt}/></details></article>)}{p.jobs?.filter(j=>j.kind==='revision'&&j.shotId===shotId).map(j=><p key={j.id}>提示词修订 · {label[j.status]||j.status} {j.error}<button disabled={!!busy||j.status!=='succeeded'} onClick={()=>loadProposal(j.id)}>查看修订稿</button></p>)}{!candidates.length&&<div className="empty small"><p>完成本镜提示词后可直接生成视频，重试保留历史。</p></div>}</div>
+          {tab==='prompt'&&<div className="prompt-editor"><h3>逐镜提示词 · {shot.title}</h3>{p.stages?.spatial==='stale'&&<p className="error-text">共用空间方案已过期，请由 PI Agent 按固定流程更新。</p>}<p className="muted compact">提示词由 PI Agent 按固定阶段生成；你可以在此查看、编辑并保存。状态：{stageStatus('prompt',shotId)==='running'?'正在生成':(p.generationState?.prompts||p.stages?.prompts||[]).find(v=>v.shotId===shotId)?.status==='stale'?'需跟随拍摄安排更新':shotDraft.prompt.trim()?'已保存，可编辑':'待编写'}</p><textarea aria-label="编辑逐镜提示词" className="prompt-textarea" spellCheck="false" placeholder={promptHints} value={shotDraft.prompt} onChange={e=>setShotField('prompt',e.target.value)}/><details><summary>查看标色提示词</summary><Prompt text={shotDraft.prompt}/></details></div>}
+          {tab==='history'&&<><div className="candidate-list">{[...candidates].reverse().map((c,i)=><article className={`candidate ${c.id===shot.selectedCandidateId?'chosen':''}`} key={c.id}><div className="section-head"><b>候选 {candidates.length-i}</b><Badge tone={c.status==='succeeded'?'good':c.status==='failed'?'warn':''}>{label[c.status]||c.status}</Badge></div><small className="muted">seed {c.input.samplingSeed??c.input.shot.seed} · {new Date(c.createdAt).toLocaleString()}</small>{c.media&&<video controls src={media(c.media.hash)} preload="metadata"/>}<GenerationProgress candidate={c} active={config?.activeCandidateId===c.id}/>{c.error&&<p className="error-text">{c.error}</p>}{c.id===shot.selectedCandidateId&&<p className="muted compact">当前选用</p>}{!c.isCurrent&&<p className="muted">来源已过期 · 保留供比较</p>}<details><summary>来源与分支</summary><p className="mono">候选 {c.id}<br/>父候选 {c.parentId||'首个候选'}<br/>分支 {({variation:'同一内容的新候选',retry:'原输入重试','edit-and-rerun':'按当前内容生成'})[c.branch]||c.branch}<br/>prompt {c.promptId||'未提交'}<br/>输入 {c.input.shotHash}<br/>模型 {c.input.model.unet}</p><Prompt text={c.input.shot.prompt}/></details></article>)}{p.jobs?.filter(j=>j.kind==='revision'&&j.shotId===shotId).map(j=><p key={j.id}>提示词修订 · {label[j.status]||j.status} {j.error}</p>)}{!candidates.length&&<div className="empty small"><p>当前还没有视频候选。流程状态和结果由 PI Agent 更新。</p></div>}</div>
             {p.cuts.length>0&&<section className="cut-history"><h3>成片历史 · {p.cuts.length} 版</h3>{[...p.cuts].reverse().map(c=><details key={c.id} open={c.id===p.selectedCutId}><summary>成片 {new Date(c.createdAt).toLocaleString()} · {Number(c.probe.format.duration).toFixed(2)} 秒{c.id===p.selectedCutId&&p.cutStale?' · 来源已过期':''}</summary><video controls preload="metadata" src={media(c.media.hash)}/><a href={media(c.media.hash)} download={`sean_cut_${c.id}.mp4`}>下载 MP4 ↗</a></details>)}</section>}</>}
         </>}
         </>}
-        {inspectorMode!=='pi'&&inspectorMode!=='record'&&<div className="inspector-actions">
+        {inspectorMode!=='pi'&&inspectorMode!=='record'&&inspectorMode!=='spatial'&&<div className="inspector-actions action-row">
           {inspectorMode==='shot'?<button disabled={!!busy||!dirty} onClick={saveShot}>保存修改{dirty?' •':''}</button>:<button disabled={!!busy||!dirty} onClick={save}>保存修改{dirty?' •':''}</button>}
-          {inspectorMode==='shot'&&workflowStage==='video'&&<button className="primary" disabled={!!generationDisabledReason} title={generationDisabledReason||'生成新视频候选并保留历史'} onClick={()=>generateVideo()}>生成新候选 ↗</button>}
-          <small className="muted" role="status">{busy||error||message||(inspectorMode==='shot'?generationDisabledReason:'修改后保存到当前短片')}</small>
+          <small className="muted" role="status">{busy||error||message||(inspectorMode==='shot'?'镜头内容保存后，PI Agent 可按需读取并处理':'修改后保存到当前短片')}</small>
         </div>}
       </aside>
-      <nav className="stage-jump" aria-label="快速跳转制作区域">{[['script','剧','故事剧本'],['shots','拍','拍摄本'],['video','片','视频与成片']].map(([stage,glyph,title])=><button key={stage} type="button" className={workflowStage===stage?'active':''} aria-label={`跳转到${title}`} aria-current={workflowStage===stage?'location':undefined} title={title} onClick={()=>jumpStage(stage)}>{glyph}</button>)}</nav>
     </main>
-    {modal&&<div className="modal-backdrop"><section className={`modal ${['import','spatial'].includes(modal)?'wide':''}`} role="dialog" aria-modal="true" aria-label={modal}><div className="section-head"><h2>{{create:'新建短片',import:'从 Reference 导入实体',settings:'接口与生成参数',entity:'实体快照',record:'历史记录',feedback:'根据视频问题修订提示词',spatial:'全片空间与提示词修订','delete-shot':'删除镜头'}[modal]}</h2><button className="quiet" onClick={()=>setModal('')}>关闭 ×</button></div>
+    {modal&&<div className="modal-backdrop"><section className={`modal ${modal==='import'?'wide':''} ${modal==='llm-details'?'llm-modal':''}`} role="dialog" aria-modal="true" aria-label={modal}><div className="section-head"><h2>{{create:'新建短片',import:'从 Reference 导入实体',settings:'接口与生成参数',entity:'实体快照',record:'历史记录',feedback:'根据视频问题修订提示词','delete-shot':'删除镜头','llm-details':'LLM 输入与输出'}[modal]}</h2><button className="quiet" onClick={()=>setModal('')}>关闭 ×</button></div>
+      {modal==='llm-details'&&llmDetail&&<><p className="muted">{llmDetail.task} · {llmDetail.status}{llmDetail.error?` · ${llmDetail.error}`:''}</p>{llmDetail.calls?.map((call,index)=><section className="llm-call" key={call.callId}><div className="section-head"><b>{call.task||`调用 ${index+1}`}</b><Badge tone={call.status==='failed'?'warn':call.status==='succeeded'?'good':''}>{call.status}</Badge></div><small className="muted">{call.usage?`Token：输入 ${call.usage.prompt_tokens??call.usage.input_tokens??'—'} · 输出 ${call.usage.completion_tokens??call.usage.output_tokens??'—'} · 总计 ${call.usage.total_tokens??'—'}`:'Token：等待接口返回'}</small><details open><summary>输入 messages</summary>{call.messages?.map((message,i)=><div className="llm-message" key={i}><b>{message.role}</b><pre className="mono">{message.content}</pre></div>)}</details><details open><summary>实时输出 · {call.output?.length||0} 字符</summary><pre className="mono llm-output">{call.output||'等待模型输出…'}</pre></details></section>)}</>}
       {modal==='delete-shot'&&deleteTarget&&<><p>从当前拍摄本删除「{deleteTarget.title}」？</p><p className="muted">旧拍摄本版本、该镜头的视频候选和历史成片保留。删除后检查空间和前后镜头衔接，更新受影响的提示词后可继续生成。</p>{error&&<p className="error-text" role="alert">{error}</p>}<div className="row"><button disabled={!!busy} onClick={()=>{setModal(deleteTarget.returnTo);setDeleteTarget(null);}}>取消</button><button className="primary" disabled={deletingBlocked} onClick={deleteShot}>删除此镜头</button></div></>}
-    {modal==='spatial'&&<>
-      {error&&<p className="error-text" role="alert">{error}</p>}
-      {(busy||message)&&<p role="status">{busy||message}</p>}
-      <p className="muted">生成草稿 → 编辑或回答问题 → 校验并采用 → 直接生成所需镜头视频。</p>
-      <Field label={spatialProposal?'回答待确认事项／希望 AI 修改的内容':'补充要求 · 可选'}><textarea rows={4} value={spatialNotes} onChange={e=>setSpatialNotes(e.target.value)} placeholder="可以逐项回答问题，或说明哪一镜、什么地方需要改。涉及动作或时长的变更，先修改拍摄本，再基于当前内容生成。"/></Field>
-      {!spatialProposal&&<button disabled={!!busy||planningBusy||!draft?.script.trim()} onClick={()=>submitSpatial(false)}>生成全片修订提案</button>}
-      {spatialJob&&!spatialProposal&&<p role="status">{label[p.jobs?.find(j=>j.id===spatialJob)?.status]||'正在生成'} {p.jobs?.find(j=>j.id===spatialJob)?.error}</p>}
-      {spatialDraft&&spatialProposal&&<>
-        {spatialReadOnly&&<p className="error-text">{spatialProposal.appliedAt?'此稿已采用，下面显示历史内容。':'拍摄本或实体已变化，此稿仅供查看。'}<button disabled={!!busy||planningBusy||!draft?.script.trim()} onClick={()=>submitSpatial(false)}>基于当前拍摄本重新生成</button></p>}
-        {!spatialReadOnly&&<div className="row"><button disabled={!!busy||dirty||planningBusy} onClick={()=>submitSpatial(true)}>根据回答与当前稿让 AI 继续修订</button><button disabled={!!busy} onClick={()=>checkSpatial(true)}>保存审阅草稿</button><button disabled={!!busy} onClick={()=>checkSpatial(false)}>重新校验当前稿</button></div>}
-        <p className="muted">本稿基于版本 {spatialProposal.input.revision}，当前项目版本 {p.revision}。红色是校验问题，有效稿可以修改对应镜头后重新校验。待确认事项需真正解决；不要仅删除问题。修改空间或状态说明时也需同步提示词。审阅草稿单独保存，采用前不改写拍摄本。</p>
-        <Field label="共用空间说明 · 区分实体事实和本片站位安排"><textarea disabled={spatialReadOnly} rows={8} value={spatialDraft.scenePlan} onChange={e=>editSpatial(d=>({...d,scenePlan:e.target.value}))}/></Field>
-        {!!spatialDraft.questions.length&&<ol>{spatialDraft.questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
-        <Field label="待确认事项 · 解决并同步提案后移除对应项"><textarea disabled={spatialReadOnly} rows={4} value={spatialDraft.questions.join('\n')} onChange={e=>editSpatial(d=>({...d,questions:e.target.value.split('\n').filter(v=>v.trim())}))}/></Field>
-        {!spatialReadOnly&&!spatialValidation&&<p role="status">当前稿已修改，请重新校验；生成时的旧错误已不作为当前结果。</p>}
-        {spatialValidation?.warnings?.map((w,i)=><p className="error-text" key={i}>{w.title}：{w.message} <button onClick={()=>{const el=document.getElementById('spatial-shot-'+w.shotId);if(el){el.open=true;el.scrollIntoView({block:'center'});el.querySelector('textarea.prompt-editor')?.focus();}}}>{spatialReadOnly?'定位历史提示词':'定位并编辑提示词'}</button></p>)}
-        {spatialDraft.shots.map((s,i)=><details id={'spatial-shot-'+s.id} key={s.id} open={i===0||!!spatialValidation?.warnings?.some(w=>w.shotId===s.id)}><summary>{i+1} · {p.shots.find(v=>v.id===s.id)?.title||'历史镜头'}</summary>
-          <ul>{s.changes.map((v,j)=><li key={j}>{v}</li>)}</ul>
-          <Field label="构图与机位关系"><textarea disabled={spatialReadOnly} rows={2} value={s.framing} onChange={e=>spatialField(s.id,'framing',e.target.value)}/></Field>
-          <Field label="开始状态 · 位置／坐站／身体朝向／视线／物品"><textarea disabled={spatialReadOnly} rows={3} value={s.startState} onChange={e=>spatialField(s.id,'startState',e.target.value)}/></Field>
-          <Field label="结束状态"><textarea disabled={spatialReadOnly} rows={3} value={s.endState} onChange={e=>spatialField(s.id,'endState',e.target.value)}/></Field>
-          <Field label="与上一镜的衔接／位置变化原因"><textarea disabled={spatialReadOnly} rows={2} value={s.transitionFromPrevious} onChange={e=>spatialField(s.id,'transitionFromPrevious',e.target.value)}/></Field>
-          <Field label="连续性要求"><textarea disabled={spatialReadOnly} rows={3} value={s.continuity} onChange={e=>spatialField(s.id,'continuity',e.target.value)}/></Field>
-          <details><summary>原提示词</summary><Prompt text={spatialProposal.input.content.shots.find(v=>v.id===s.id)?.prompt||''}/></details>
-          <Field label="修订后的完整 Ref2VA 提示词"><textarea disabled={spatialReadOnly} rows={16} className="mono prompt-editor" value={s.prompt} onChange={e=>spatialField(s.id,'prompt',e.target.value)}/></Field>
-        </details>)}
-        <p className="muted">{spatialReadOnly?'历史稿不可再次采用':spatialDraft.questions.length?'尚有待确认事项，采用不可用':!spatialValidation?'请先重新校验当前稿':spatialValidation.warnings.length?'尚有提示词校验错误，采用不可用':'校验通过；采用后所有选片及成片会过期，历史保留'} · 缓存命中 token：{spatialProposal.response?.cachedTokens??'接口未返回'}</p>
-        <button className="primary" disabled={!!busy||dirty||spatialReadOnly||!!spatialDraft.questions.length||!spatialValidation||!!spatialValidation.warnings.length} onClick={()=>work('采用全片空间修订',async()=>{clean();apply(await action(`jobs/${spatialProposal.id}/apply-spatial`,{result:spatialDraft}));setModal('');setMessage('已采用提示词与空间安排，可以直接生成所需镜头视频。');})}>采用全部修订</button>
-      </>}
-    </>}
-    {modal==='feedback'&&feedback&&<><p className="muted">描述你看到的问题和具体期望；修订稿先供你审阅，采用后直接生成本镜视频。</p><Field label="实际看到的问题"><textarea rows={3} value={feedback.observed} onChange={e=>setFeedback(f=>({...f,observed:e.target.value}))} placeholder="例如：角色 B 横着坐，身体朝向不对"/></Field><Field label="希望改成怎样"><textarea rows={3} value={feedback.desired} onChange={e=>setFeedback(f=>({...f,desired:e.target.value}))} placeholder="明确身体朝向、视线方向，以及与桌子、A 和镜头的位置关系"/></Field><button disabled={!!busy||planningBusy||!feedback.observed.trim()||!feedback.desired.trim()} onClick={()=>work('提交提示词修订',async()=>{const current=await savedInput();const j=await api(`/projects/${current.id}/stages/revision/generate`,{revision:current.revision,useCurrent:true,shotId:feedback.shotId,feedback:{candidateId:feedback.candidateId,observed:feedback.observed,desired:feedback.desired}});setProposal(null);setProposalPrompt('');setRevisionJob(j.jobId);apply(await api(`/projects/${p.id}`));})}>生成修订稿</button>{revisionJob&&!proposal&&<p role="status">修订状态：{p.jobs?.find(j=>j.id===revisionJob)?.status||'running'} {p.jobs?.find(j=>j.id===revisionJob)?.error}</p>}{proposal&&<><ul>{proposal.result.changes.map((v,i)=><li key={i}>{v}</li>)}</ul>{proposal.response?.warnings?.map((w,i)=><p className="error-text" key={i}>{w.message}</p>)}<details><summary>原提示词</summary><Prompt text={proposal.input.content.shots.find(s=>s.id===proposal.shotId)?.prompt||''}/></details><Field label="修订稿 · 可以继续编辑"><textarea rows={18} className="mono" value={proposalPrompt} onChange={e=>setProposalPrompt(e.target.value)}/></Field><p className="muted">缓存命中 token：{proposal.response?.cachedTokens??'接口未返回'} · {proposal.appliedAt?'此稿已采用':proposal.input.revision!==p.revision?'项目已变更，请重新修订':'采用后旧视频保留，可生成新视频'}</p><button className="primary" disabled={!!busy||dirty||!!proposal.appliedAt||proposal.input.revision!==p.revision} onClick={()=>work('采用提示词修订',async()=>{clean();apply(await action(`jobs/${proposal.id}/apply-prompt`,{prompt:proposalPrompt}));setModal('');setTab('prompt');setMessage('已采用修订稿，可直接生成本镜新视频。');})}>采用修订稿</button></>}</>}
       {modal==='record'&&record&&<pre className="mono">{JSON.stringify(record,null,2)}</pre>}
       {modal==='create'&&<><Field label="短片名称"><input autoFocus value={newTitle} onChange={e=>setNewTitle(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')create();}} placeholder="给这个故事一个名字"/></Field><button className="primary" disabled={!!busy||!newTitle.trim()} onClick={create}>创建项目</button></>}
       {modal==='settings'&&draft&&<><Field label="OpenAI 兼容 API 基址（包含 /v1）"><input value={draft.settings.llm.baseUrl} onChange={e=>updateSettings('llm','baseUrl',e.target.value)}/></Field><Field label="模型名称"><input value={draft.settings.llm.model} onChange={e=>updateSettings('llm','model',e.target.value)}/></Field><p className="muted">API key 在服务端 .env 设置 · {config.llmKeyConfigured?'已配置':'未配置（可用于无 key 的本地接口）'}</p><div className="two-fields"><Field label="Temperature"><input type="number" min="0" max="2" step="0.1" value={draft.settings.llm.temperature} onChange={e=>updateSettings('llm','temperature',Number(e.target.value))}/></Field><Field label="目标总时长（秒）"><input type="number" min="4" max="600" value={draft.settings.targetDurationSec} onChange={e=>updateSettings(null,'targetDurationSec',Number(e.target.value))}/></Field></div><div className="two-fields"><Field label="宽度（64 的倍数）"><input type="number" min="256" max="1344" step="64" value={draft.settings.render.width} onChange={e=>updateSettings('render','width',Number(e.target.value))}/></Field><Field label="高度（64 的倍数）"><input type="number" min="256" max="768" step="64" value={draft.settings.render.height} onChange={e=>updateSettings('render','height',Number(e.target.value))}/></Field></div><p className="muted">默认 H3 Ref2VA · PDD 8 步 · Sage · 24 fps。每镜 4–15 秒。</p><button className="primary" disabled={!!busy} onClick={save}>保存项目设置</button></>}

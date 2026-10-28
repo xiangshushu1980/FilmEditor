@@ -23,7 +23,7 @@ test('new film conversation selects official DeepSeek before its first prompt wi
   assert.deepEqual(f.calls[0].body,{type:'ensure_session',cwd:'/film'});
   assert.deepEqual(f.calls[1].body,{type:'set_model',provider:'deepseek',modelId:'deepseek-flash'});
   assert.ok(!('persist' in f.calls[1].body));assert.equal(f.calls[1].url,`http://127.0.0.1:30141/api/agent/${f.sessionId}`);
-  assert.ok(f.calls.every(c=>c.redirect==='error'));assert.match(f.calls[4].body.message,/初始化阶段只读/);
+  assert.ok(f.calls.every(c=>c.redirect==='error'));assert.equal(f.calls[4].body.message,'本对话初始为只读：请读取本片上下文、共享文档和待处理更新，向用户报告阶段与待办。可维护共享文档，不执行影片工作流或写入影片；只有用户通过影片界面完成任务交接后，才成为当前执行 Agent。');
 });
 
 test('model rejection or mismatch preserves created session and cannot submit a fallback prompt',async()=>{
